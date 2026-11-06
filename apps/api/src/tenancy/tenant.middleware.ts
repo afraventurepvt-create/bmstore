@@ -28,6 +28,7 @@ export class TenantMiddleware implements NestMiddleware {
           if (t.status !== 'active') throw new ForbiddenException('Store suspended');
           if (t.expiresAt && new Date(t.expiresAt) <= new Date()) throw new ForbiddenException('Store subscription expired');
           store.tenant = t;
+          store.tenantId = t.id;
         }
         RequestContext.run(store, () => next());
       })

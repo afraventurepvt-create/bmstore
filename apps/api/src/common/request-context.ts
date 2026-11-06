@@ -32,6 +32,10 @@ export interface BypassInfo {
 
 export interface RequestStore {
   requestId: string;
+  /** The ONLY value the Prisma extension trusts for scoping. Set by the middleware or runAsTenant(). */
+  tenantId?: string;
+  /** Platform scope: only rows with tenant_id IS NULL, and only on models that allow it (users, refresh_tokens, audit_logs). */
+  platform?: boolean;
   tenant?: TenantInfo;
   actor?: AuthActor;
   bypass?: BypassInfo;
@@ -47,6 +51,6 @@ export const RequestContext = {
     return als.getStore();
   },
   tenantId(): string | undefined {
-    return als.getStore()?.tenant?.id;
+    return als.getStore()?.tenantId;
   },
 };
