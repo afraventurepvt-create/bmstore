@@ -1,0 +1,12 @@
+{
+  "name": "bmstore",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": ["apps/*"],
+  "scripts": {
+    "build": "npm run build -w apps/api",
+    "test": "npm test -w apps/api",
+    "test:gate": "npm run test:gate -w apps/api"
+  },
+  "engines": { "node": ">=20" }
+}
