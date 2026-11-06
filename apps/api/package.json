@@ -12,7 +12,7 @@
     "seed:superadmin": "ts-node scripts/seed-superadmin.ts",
     "typecheck": "tsc --noEmit",
     "test": "jest --runInBand",
-    "test:gate": "jest --runInBand test/gate.e2e-spec.ts"
+    "test:gate": "jest --runInBand test/gate.spec.ts"
   },
   "dependencies": {
     "@nestjs/common": "^11.2.8",

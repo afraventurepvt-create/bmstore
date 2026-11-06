@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+# Values below are throw-away, test-only credentials for the service containers (not real secrets).
+env:
+  DATABASE_URL: postgresql://bmstore:bmstore@localhost:5432/bmstore_test?schema=public
+  REDIS_URL: redis://localhost:6379/15
+  ROOT_DOMAIN: localhost
+  JWT_ACCESS_SECRET: ci-only-jwt-secret-ci-only-jwt-secret-0123456789
+  ENCRYPTION_KEY: Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc3Nzc=
+
+jobs:
+  # The merge gate. If tenant isolation regresses in ANY model, this job fails and the PR cannot merge.
+  tenant-isolation-gate:
+    name: Tenant isolation gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: bmstore
+          POSTGRES_PASSWORD: bmstore
+          POSTGRES_DB: bmstore_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U bmstore -d bmstore_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Generate Prisma client
+        run: npx prisma generate
+        working-directory: apps/api
+      - name: Apply migrations
+        run: npx prisma migrate deploy
+        working-directory: apps/api
+      - name: Run the gate test
+        run: npm run test:gate
+        working-directory: apps/api
+
+  test:
+    name: Typecheck, build and full test suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs: tenant-isolation-gate
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: bmstore
+          POSTGRES_PASSWORD: bmstore
+          POSTGRES_DB: bmstore_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U bmstore -d bmstore_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+        working-directory: apps/api
+      - run: npx prisma migrate deploy
+        working-directory: apps/api
+      - name: Migrations match schema.prisma (no drift)
+        run: npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --exit-code
+        working-directory: apps/api
+      - run: npm run typecheck
+        working-directory: apps/api
+      - run: npm run build
+        working-directory: apps/api
+      - run: npm test
+        working-directory: apps/api
