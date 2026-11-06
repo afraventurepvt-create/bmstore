@@ -1,4 +1,5 @@
 import { Global, Module } from '@nestjs/common';
+import { SuperadminModule } from './superadmin/superadmin.module';
 import { AuthModule } from './auth/auth.module';
 import { AppConfig } from './config/app-config';
 import { HealthController } from './health/health.controller';
@@ -13,5 +14,5 @@ import { TenancyModule } from './tenancy/tenancy.module';
 })
 class CoreModule {}
 
-@Module({ imports: [CoreModule, TenancyModule, AuthModule], controllers: [HealthController] })
+@Module({ imports: [CoreModule, TenancyModule, AuthModule, SuperadminModule], controllers: [HealthController] })
 export class AppModule {}
