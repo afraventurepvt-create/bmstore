@@ -12,6 +12,8 @@
 import { INestApplication } from '@nestjs/common';
 import { Prisma, PrismaClient } from '@prisma/client';
 import { randomBytes, randomUUID } from 'node:crypto';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { join } from 'node:path';
 import request from 'supertest';
 import { AuthService } from '../src/auth/auth.service';
 import { PrismaService } from '../src/prisma/prisma.service';
@@ -166,6 +168,21 @@ describe('GATE: tenant isolation across every model', () => {
         for (const k of ['A', 'B'] as const) expect(seeded[k][m].length).toBeGreaterThan(0);
       }
       expect(MODELS).toHaveLength(13);
+    });
+    it('static check: only allowlisted files may touch the UNSCOPED client (prisma.base)', () => {
+      // `base` is the escape hatch used by tenant resolution (pre-context), the audit writer and the extension.
+      // Feature code must use `prisma.db`. Adding a file here requires a deliberate edit + review.
+      const ALLOW = new Set([
+        'prisma/prisma.service.ts', 'prisma/tenant-scope.ts', 'tenancy/tenant-resolver.service.ts', 'superadmin/tenants.service.ts',
+      ]);
+      const root = join(__dirname, '..', 'src');
+      const walk = (d: string): string[] => readdirSync(d).flatMap((f) => (statSync(join(d, f)).isDirectory() ? walk(join(d, f)) : [join(d, f)]));
+      const offenders = walk(root)
+        .filter((f) => f.endsWith('.ts'))
+        .filter((f) => /\.base\b/.test(readFileSync(f, 'utf8')))
+        .map((f) => f.slice(root.length + 1))
+        .filter((f) => !ALLOW.has(f));
+      expect(offenders).toEqual([]);
     });
     it('the scoped client has no tenant-bypassing surface left (raw SQL disabled)', () => {
       for (const f of ['$queryRaw', '$queryRawUnsafe', '$executeRaw', '$executeRawUnsafe']) expect(() => db[f]('select 1')).toThrow(/disabled/);
