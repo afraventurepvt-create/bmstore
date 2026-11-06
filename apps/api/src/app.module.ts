@@ -1,4 +1,5 @@
 import { Global, Module } from '@nestjs/common';
+import { AuthModule } from './auth/auth.module';
 import { AppConfig } from './config/app-config';
 import { HealthController } from './health/health.controller';
 import { PrismaService } from './prisma/prisma.service';
@@ -12,5 +13,5 @@ import { TenancyModule } from './tenancy/tenancy.module';
 })
 class CoreModule {}
 
-@Module({ imports: [CoreModule, TenancyModule], controllers: [HealthController] })
+@Module({ imports: [CoreModule, TenancyModule, AuthModule], controllers: [HealthController] })
 export class AppModule {}
