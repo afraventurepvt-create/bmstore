@@ -1,4 +1,4 @@
-import { ForbiddenException, Injectable, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import { ForbiddenException, Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
 import { AuthActor, RequestContext } from '../common/request-context';
@@ -16,12 +16,22 @@ export class PrismaService implements OnModuleInit, OnModuleDestroy {
   /**
    * UNSCOPED client. Only for: tenant resolution (pre-context), the extension's own audit writes,
    * and tests. Application code must use `db`.
-   * Query logging is off on purpose: parameters would leak PII/secrets into logs.
+   * Query logging is off on purpose: parameters would leak PII/secrets into logs. Prisma's own error/warn
+   * output is also replaced (see constructor): Postgres errors embed the failing ROW, e.g. password_hash.
    */
-  readonly base = new PrismaClient({ log: ['warn', 'error'] });
+  readonly base: PrismaClient = new PrismaClient({
+    log: [{ emit: 'event', level: 'error' }, { emit: 'event', level: 'warn' }],
+  });
 
   /** Tenant-scoped client. Every operation is forced into the active tenant (or throws). */
   readonly db = createScopedClient(this.base);
+
+  private readonly log = new Logger('Prisma');
+  constructor() {
+    const b = this.base as any;
+    b.$on('error', (e: { target?: string }) => this.log.error(`prisma error (details withheld) target=${e?.target ?? '-'}`));
+    b.$on('warn', (e: { target?: string }) => this.log.warn(`prisma warning (details withheld) target=${e?.target ?? '-'}`));
+  }
 
   async onModuleInit() {
     await this.base.$connect();
