@@ -135,11 +135,12 @@ describe('razorpay secrets: encrypted at rest, never returned, never logged', ()
       await new Promise((r2) => setTimeout(r2, 200)); // let async Prisma log events flush
     } finally { stopCapture(); }
     const logs = captured.join('\n');
-    expect(status).toBe(500);
-    expect(body).toBe(JSON.stringify({ statusCode: 500, message: 'Internal server error' }));
+    // a CHECK violation is translated to a plain 400 (common/prisma-errors.ts); neither body nor logs carry the row
+    expect(status).toBe(400);
+    expect(JSON.parse(body)).toMatchObject({ statusCode: 400, message: 'A value is out of range' });
+    expect(body).not.toContain(HASH_SECRET);
     expect(logs).not.toContain(HASH_SECRET);
     expect(logs).not.toContain(KEY_SECRET);
     expect(logs).not.toMatch(/Failing row/);
-    expect(logs).toMatch(/unhandled/); // the error WAS logged, just safely
   });
 });

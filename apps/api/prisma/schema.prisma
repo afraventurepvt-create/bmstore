@@ -279,6 +279,10 @@ model Settings {
   codEnabled   Boolean      @default(true) @map("cod_enabled")
   codCharge    Int          @default(0) @map("cod_charge") // paise
   orderPrefix  String       @default("ORD") @map("order_prefix")
+  /// Per-city shipping overrides: [{ "city": "Chennai", "ratePaise": 4000 }] (city matched case-insensitively)
+  cityRates    Json         @default("[]") @map("city_rates")
+  /// Products at or below this stock count as "low stock" on the dashboard
+  lowStockThreshold Int     @default(5) @map("low_stock_threshold")
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 

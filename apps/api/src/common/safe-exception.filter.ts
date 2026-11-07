@@ -1,6 +1,7 @@
 import { ArgumentsHost, Catch, HttpException, Logger } from '@nestjs/common';
 import { BaseExceptionFilter } from '@nestjs/core';
 import { TooManyRequestsException } from './errors';
+import { prismaToHttp } from './prisma-errors';
 import { RequestContext } from './request-context';
 
 /**
@@ -17,6 +18,8 @@ export class SafeExceptionFilter extends BaseExceptionFilter {
       host.switchToHttp().getResponse().setHeader('Retry-After', String(exception.retryAfterSeconds));
     }
     if (exception instanceof HttpException) return super.catch(exception, host);
+    const translated = prismaToHttp(exception);
+    if (translated) return super.catch(translated, host);
     const e = exception as { name?: string; code?: string };
     this.log.error(`unhandled ${e?.name ?? 'error'}${e?.code ? ` (${e.code})` : ''} requestId=${RequestContext.get()?.requestId ?? '-'}`);
     return super.catch(new HttpException({ statusCode: 500, message: 'Internal server error' }, 500), host);
