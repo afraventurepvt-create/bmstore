@@ -1,15 +1,17 @@
 // BMStore – single database, multi-tenant. Every tenant-scoped row carries tenant_id.
 // Isolation layers: (1) Prisma client extension auto-injects tenantId (src/prisma),
-// (2) composite (tenant_id, x) foreign keys make cross-tenant references impossible in the DB,
-// (3) the gate test (test/gate.e2e-spec.ts) proves it for EVERY model.
+// (2) Postgres row-level security on every table (migration 0004), pinned per transaction via set_config,
+// (3) composite (tenant_id, x) foreign keys make cross-tenant references impossible in the DB,
+// (4) the gate test (test/gate.spec.ts) proves it for EVERY model, with and without the app layer.
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL") // application role: no table ownership, NOBYPASSRLS -> row-level security applies
+  directUrl = env("DATABASE_ADMIN_URL") // owner role: migrations and the audited superadmin bypass (exempt from RLS)
 }
 
 enum UserRole {
@@ -18,49 +20,68 @@ enum UserRole {
   staff
 }
 
+// Vocabulary is fixed (do not add synonyms): see ../../PREWORK_REPORT.md.
+enum TenantPlan {
+  STARTER // at most 10 products (enforced by a DB trigger, migration 0006)
+  STANDARD // unlimited within fair use
+}
+
 enum TenantStatus {
-  active
-  suspended
+  BUILDING // being set up: store admins can log in and work, storefront not yet public
+  LIVE
+  SUSPENDED // blocked (e.g. non-payment): every request on the store host is refused
+  PARKED // dormant: every request on the store host is refused
 }
 
 enum ProductStatus {
-  draft
-  active
-  archived
+  DRAFT
+  ACTIVE
+  ARCHIVED
 }
 
 enum PaymentMode {
-  cod
-  online
+  COD
+  ONLINE
 }
 
 enum PaymentStatus {
-  pending
-  paid
-  failed
-  refunded
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
 }
 
 enum OrderStatus {
-  placed
-  confirmed
-  packed
-  shipped
-  delivered
-  cancelled
-  returned
+  PENDING
+  CONFIRMED
+  PACKED
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  RETURNED
 }
 
 enum CouponType {
-  percent
-  flat
+  PERCENT
+  FLAT
 }
 
 enum ShippingMode {
-  flat
-  free
-  free_above
+  FLAT
+  FREE
+  FREE_ABOVE
 }
+
+enum MediaStatus {
+  PENDING // presigned, bytes not confirmed yet
+  UPLOADED // object confirmed in storage, waiting for the worker
+  PROCESSING
+  READY // webp + thumbnail stored, original removed
+  FAILED
+}
+
+// MONEY: every amount is an integer number of paise (Int). No Float/Decimal columns anywhere; the gate test enforces it.
 
 model Tenant {
   id                String       @id @default(uuid()) @db.Uuid
@@ -68,8 +89,8 @@ model Tenant {
   slug              String       @unique
   subdomain         String       @unique
   customDomain      String?      @unique @map("custom_domain")
-  plan              String       @default("starter")
-  status            TenantStatus @default(active)
+  plan              TenantPlan   @default(STARTER)
+  status            TenantStatus @default(BUILDING)
   gstNumber         String?      @map("gst_number")
   address           String?
   supportPhone      String?      @map("support_phone")
@@ -78,17 +99,24 @@ model Tenant {
   whatsappNumber    String?      @map("whatsapp_number")
   createdAt         DateTime     @default(now()) @map("created_at")
   expiresAt         DateTime?    @map("expires_at")
+  /// Fair-use limits (superadmin-editable). Counted in tenant_usage by triggers.
+  maxProducts       Int          @default(2000) @map("max_products")
+  maxMediaMb        Int          @default(10240) @map("max_media_mb")
 
-  themeConfig   ThemeConfig?
-  settings      Settings?
-  products      Product[]
-  categories    Category[]
-  orders        Order[]
-  customers     Customer[]
-  coupons       Coupon[]
-  pages         Page[]
-  users         User[]
-  refreshTokens RefreshToken[]
+  themeConfig         ThemeConfig?
+  settings            Settings?
+  products            Product[]
+  variants            Variant[]
+  categories          Category[]
+  orders              Order[]
+  customers           Customer[]
+  coupons             Coupon[]
+  pages               Page[]
+  users               User[]
+  refreshTokens       RefreshToken[]
+  passwordResetTokens PasswordResetToken[]
+  media               Media[]
+  usage               TenantUsage?
 
   @@index([status, expiresAt])
   @@map("tenants")
@@ -137,11 +165,11 @@ model Product {
   name        String
   slug        String
   description String?
-  price       Decimal       @db.Decimal(12, 2)
-  mrp         Decimal       @db.Decimal(12, 2)
+  price       Int // paise
+  mrp         Int // paise
   sku         String?
   stock       Int           @default(0)
-  status      ProductStatus @default(draft)
+  status      ProductStatus @default(DRAFT)
   categoryId  String?       @map("category_id") @db.Uuid
   images      String[]
   hsnCode     String?       @map("hsn_code")
@@ -152,6 +180,7 @@ model Product {
   category Category? @relation(fields: [tenantId, categoryId], references: [tenantId, id], onDelete: NoAction, onUpdate: NoAction)
   variants Variant[]
 
+  @@unique([tenantId, id])
   @@unique([tenantId, slug])
   @@unique([tenantId, sku])
   @@index([tenantId, status])
@@ -159,19 +188,25 @@ model Product {
   @@map("products")
 }
 
-// Scoped through its product (no tenant_id column, per spec).
+// Carries tenant_id like every other table; the composite FK (tenant_id, product_id) -> products(tenant_id, id)
+// makes a variant of another tenant's product impossible at the database level.
 model Variant {
   id          String  @id @default(uuid()) @db.Uuid
+  tenantId    String  @map("tenant_id") @db.Uuid
   productId   String  @map("product_id") @db.Uuid
   optionName  String  @map("option_name")
   optionValue String  @map("option_value")
-  priceDelta  Decimal @default(0) @map("price_delta") @db.Decimal(12, 2)
+  priceDelta  Int     @default(0) @map("price_delta") // paise, may be negative
   stock       Int     @default(0)
   sku         String?
 
-  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  tenant  Tenant  @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  product Product @relation(fields: [tenantId, productId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
 
-  @@unique([productId, optionName, optionValue])
+  @@unique([tenantId, id])
+  @@unique([tenantId, productId, optionName, optionValue])
+  @@unique([tenantId, sku])
+  @@index([tenantId, productId])
   @@map("variants")
 }
 
@@ -198,13 +233,13 @@ model Order {
   orderNo       String        @map("order_no")
   customerId    String        @map("customer_id") @db.Uuid
   items         Json
-  subtotal      Decimal       @db.Decimal(12, 2)
-  shipping      Decimal       @default(0) @db.Decimal(12, 2)
-  tax           Decimal       @default(0) @db.Decimal(12, 2)
-  total         Decimal       @db.Decimal(12, 2)
+  subtotal      Int // paise
+  shipping      Int           @default(0) // paise
+  tax           Int           @default(0) // paise
+  total         Int // paise
   paymentMode   PaymentMode   @map("payment_mode")
-  paymentStatus PaymentStatus @default(pending) @map("payment_status")
-  orderStatus   OrderStatus   @default(placed) @map("order_status")
+  paymentStatus PaymentStatus @default(PENDING) @map("payment_status")
+  orderStatus   OrderStatus   @default(PENDING) @map("order_status")
   address       Json
   createdAt     DateTime      @default(now()) @map("created_at")
 
@@ -223,8 +258,8 @@ model Coupon {
   tenantId   String     @map("tenant_id") @db.Uuid
   code       String
   type       CouponType
-  value      Decimal    @db.Decimal(12, 2)
-  minOrder   Decimal    @default(0) @map("min_order") @db.Decimal(12, 2)
+  value      Int // FLAT: paise off; PERCENT: whole percent (0-100)
+  minOrder   Int        @default(0) @map("min_order") // paise
   usageLimit Int?       @map("usage_limit")
   expiresAt  DateTime?  @map("expires_at")
 
@@ -250,13 +285,17 @@ model Page {
 }
 
 model Settings {
-  tenantId     String       @id @map("tenant_id") @db.Uuid
-  shippingMode ShippingMode @default(flat) @map("shipping_mode")
-  flatRate     Decimal      @default(0) @map("flat_rate") @db.Decimal(12, 2)
-  freeAbove    Decimal?     @map("free_above") @db.Decimal(12, 2)
-  codEnabled   Boolean      @default(true) @map("cod_enabled")
-  codCharge    Decimal      @default(0) @map("cod_charge") @db.Decimal(12, 2)
-  orderPrefix  String       @default("ORD") @map("order_prefix")
+  tenantId          String       @id @map("tenant_id") @db.Uuid
+  shippingMode      ShippingMode @default(FLAT) @map("shipping_mode")
+  flatRate          Int          @default(0) @map("flat_rate") // paise
+  freeAbove         Int?         @map("free_above") // paise
+  codEnabled        Boolean      @default(true) @map("cod_enabled")
+  codCharge         Int          @default(0) @map("cod_charge") // paise
+  orderPrefix       String       @default("ORD") @map("order_prefix")
+  /// Per-city shipping overrides: [{ "city": "Chennai", "ratePaise": 4000 }] (city matched case-insensitively)
+  cityRates         Json         @default("[]") @map("city_rates")
+  /// Products at or below this stock count as "low stock" on the dashboard
+  lowStockThreshold Int          @default(5) @map("low_stock_threshold")
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -265,18 +304,23 @@ model Settings {
 
 // tenant_id is NULL only for superadmin (enforced by CHECK in migration 0002).
 model User {
-  id           String   @id @default(uuid()) @db.Uuid
-  tenantId     String?  @map("tenant_id") @db.Uuid
-  email        String
-  phone        String?
-  passwordHash String   @map("password_hash")
-  role         UserRole
-  isActive     Boolean  @default(true) @map("is_active")
-  createdAt    DateTime @default(now()) @map("created_at")
+  id                  String    @id @default(uuid()) @db.Uuid
+  tenantId            String?   @map("tenant_id") @db.Uuid
+  email               String
+  phone               String?
+  passwordHash        String    @map("password_hash")
+  role                UserRole
+  isActive            Boolean   @default(true) @map("is_active")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  // Login protection (src/auth): consecutive failures and the lock they produce. Reset on success / password reset.
+  failedLoginAttempts Int       @default(0) @map("failed_login_attempts")
+  lockedUntil         DateTime? @map("locked_until")
 
-  tenant                Tenant?        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  refreshTokens         RefreshToken[] @relation("RefreshTokenUser")
-  refreshTokensInTenant RefreshToken[] @relation("RefreshTokenUserTenant")
+  tenant                      Tenant?              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  refreshTokens               RefreshToken[]       @relation("RefreshTokenUser")
+  refreshTokensInTenant       RefreshToken[]       @relation("RefreshTokenUserTenant")
+  passwordResetTokens         PasswordResetToken[] @relation("PasswordResetUser")
+  passwordResetTokensInTenant PasswordResetToken[] @relation("PasswordResetUserTenant")
 
   @@unique([tenantId, id])
   @@unique([tenantId, email])
@@ -303,6 +347,69 @@ model RefreshToken {
   @@index([tenantId, userId])
   @@index([familyId])
   @@map("refresh_tokens")
+}
+
+// Images uploaded straight to object storage (presigned PUT). The worker converts them to WebP (max 1600px) plus a
+// 400px thumbnail, strips EXIF, and records the stored bytes; sum(bytes) per tenant is the media usage.
+model Media {
+  id            String      @id @default(uuid()) @db.Uuid
+  tenantId      String      @map("tenant_id") @db.Uuid
+  kind          String // product | category | logo | banner | page
+  filename      String // as named by the client; CSV import matches image_filename against it
+  contentType   String      @map("content_type")
+  originalKey   String      @map("original_key")
+  key           String? // processed webp
+  thumbKey      String?     @map("thumb_key")
+  width         Int?
+  height        Int?
+  declaredBytes Int         @map("declared_bytes")
+  bytes         Int         @default(0) // bytes currently stored for this item (original, then webp + thumb)
+  status        MediaStatus @default(PENDING)
+  error         String?
+  attempts      Int         @default(0)
+  createdAt     DateTime    @default(now()) @map("created_at")
+  updatedAt     DateTime    @default(now()) @updatedAt @map("updated_at")
+  readyAt       DateTime?   @map("ready_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, status])
+  @@index([tenantId, filename])
+  @@index([status, createdAt])
+  @@map("media")
+}
+
+// Live counters maintained by database triggers (migration *_fair_use_limits): products rows and stored media bytes.
+// Read by GET /store/usage and by the fair-use checks; never written by application code.
+model TenantUsage {
+  tenantId     String   @id @map("tenant_id") @db.Uuid
+  productCount Int      @default(0) @map("product_count")
+  mediaBytes   BigInt   @default(0) @map("media_bytes")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_usage")
+}
+
+// Password reset: only the sha256 of the emailed token is stored; single-use (used_at), 30 minute expiry.
+model PasswordResetToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tenantId  String?   @map("tenant_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user         User    @relation("PasswordResetUser", fields: [userId], references: [id], onDelete: Cascade)
+  // Composite FK: a token's tenant must be its user's tenant (not enforced when tenant_id is NULL = superadmin).
+  userInTenant User?   @relation("PasswordResetUserTenant", fields: [tenantId, userId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  tenant       Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, userId])
+  @@map("password_reset_tokens")
 }
 
 // Append-only (DB trigger in migration 0002). No FKs: logs outlive tenants/users.

@@ -10,6 +10,13 @@ import { RequestContext } from '../common/request-context';
  *   - inside an explicit bypass-> unscoped, but ALWAYS writes an audit_logs row first
  *   - with no context at all   -> throws (fail closed)
  *
+ * Two layers, two database roles:
+ *   1. The application layer above rewrites `where`/`data` so every statement names the tenant.
+ *   2. Postgres row-level security (migration 0004) re-checks every row. The scoped client connects as a role that
+ *      owns nothing and has NOBYPASSRLS; before each query/transaction it pins the tenant with a transaction-local
+ *      `set_config('app.tenant_id', ..., true)`. If the app layer is ever bypassed, nothing is pinned and the database
+ *      returns/accepts NO rows. The bypass uses the owner connection, which Postgres exempts from RLS.
+ *
  * Every model must be classified in SCOPES; the client refuses to build otherwise, so a new table
  * can never silently ship unscoped. The gate test enforces the same from the DMMF.
  */
@@ -23,15 +30,14 @@ export class TenantIsolationError extends Error {
 
 export type Scope =
   | { kind: 'direct'; nullable?: boolean } // has a tenant_id column
-  | { kind: 'self' } // the tenants table: row id == tenant id
-  | { kind: 'viaProduct' }; // variants: scoped through product.tenant_id
+  | { kind: 'self' }; // the tenants table: row id == tenant id
 
 export const SCOPES: Record<string, Scope> = {
   Tenant: { kind: 'self' },
   ThemeConfig: { kind: 'direct' },
   Category: { kind: 'direct' },
   Product: { kind: 'direct' },
-  Variant: { kind: 'viaProduct' },
+  Variant: { kind: 'direct' },
   Customer: { kind: 'direct' },
   Order: { kind: 'direct' },
   Coupon: { kind: 'direct' },
@@ -39,10 +45,14 @@ export const SCOPES: Record<string, Scope> = {
   Settings: { kind: 'direct' },
   User: { kind: 'direct', nullable: true },
   RefreshToken: { kind: 'direct', nullable: true },
+  PasswordResetToken: { kind: 'direct', nullable: true },
+  Media: { kind: 'direct' },
+  TenantUsage: { kind: 'direct' },
   AuditLog: { kind: 'direct', nullable: true },
 };
 
 /** Tenants may only edit these columns of their own tenant row. Plan/status/expiry/domains: superadmin only. */
+// (maxProducts / maxMediaMb are fair-use limits: superadmin only, like plan.)
 const TENANT_SELF_WRITABLE = new Set([
   'name', 'address', 'gstNumber', 'supportPhone', 'whatsappNumber', 'razorpayKeyEnc', 'razorpaySecretEnc',
 ]);
@@ -58,6 +68,7 @@ const FILTER_OPS = new Set([
 const CREATE_OPS = new Set(['create', 'createMany', 'createManyAndReturn']);
 const KNOWN_OPS = new Set([...UNIQUE_OPS, ...FILTER_OPS, ...CREATE_OPS]);
 const READ_OPS = new Set(['findUnique', 'findUniqueOrThrow', 'findFirst', 'findFirstOrThrow', 'findMany', 'count', 'aggregate', 'groupBy']);
+const RAW_METHODS = ['$queryRaw', '$queryRawUnsafe', '$executeRaw', '$executeRawUnsafe'] as const;
 
 const arr = <T>(v: T | T[] | undefined): T[] => (v === undefined ? [] : Array.isArray(v) ? v : [v]);
 
@@ -66,10 +77,22 @@ const MODELS = Prisma.dmmf.datamodel.models;
 const RELATIONS = new Map<string, Map<string, string>>(
   MODELS.map((m) => [m.name, new Map(m.fields.filter((f) => f.kind === 'object').map((f) => [f.name, f.type]))]),
 );
+/** Prisma client delegate for a model name (`ThemeConfig` -> `client.themeConfig`). */
+const delegateOf = (model: string) => model[0].toLowerCase() + model.slice(1);
 
 export function assertAllModelsClassified() {
   const missing = MODELS.map((m) => m.name).filter((n) => !SCOPES[n]);
   if (missing.length) throw new Error(`Models not classified in SCOPES (tenant isolation): ${missing.join(', ')}`);
+}
+
+// ---- row-level security pin ------------------------------------------------------------------
+/** The settings the RLS policies read (prisma/migrations/*_row_level_security). Transaction-local: `true`. */
+export const RLS_TENANT_SETTING = 'app.tenant_id';
+export const RLS_PLATFORM_SETTING = 'app.platform';
+
+/** Pins the scope on the connection for the CURRENT transaction only. Must run inside the same transaction as the query. */
+export function pinScope(client: { $executeRaw: PrismaClient['$executeRaw'] }, tenantId: string | null, platform: boolean) {
+  return client.$executeRaw`SELECT set_config(${RLS_TENANT_SETTING}, ${tenantId ?? ''}, true), set_config(${RLS_PLATFORM_SETTING}, ${platform ? 'on' : 'off'}, true)`;
 }
 
 // ---- audit meta ------------------------------------------------------------------------------
@@ -86,55 +109,122 @@ function redact(v: unknown, depth = 0): unknown {
   );
 }
 
+interface ScopeValue { tenantId: string | null; platform: boolean }
+
+/** Resolve what the current context may see. No context => fail closed. */
+function resolveScope(model: string, operation: string): ScopeValue {
+  const store = RequestContext.get();
+  const scope = SCOPES[model];
+  if (!scope) throw new TenantIsolationError(`Model ${model} is not classified for tenant isolation`);
+  if (store?.tenantId) return { tenantId: store.tenantId, platform: false };
+  if (store?.platform) {
+    if (scope.kind !== 'direct' || !scope.nullable) throw new TenantIsolationError(`Platform scope cannot access ${model}`);
+    return { tenantId: null, platform: true };
+  }
+  throw new TenantIsolationError(`No tenant context for ${model}.${operation}`);
+}
+
 // ---- the extension ---------------------------------------------------------------------------
-export function createScopedClient(base: PrismaClient) {
+/**
+ * @param app   connection as the APPLICATION role (row-level security applies). Carries every tenant/platform query.
+ * @param admin connection as the OWNER role (exempt from RLS). Carries the audited bypass and the audit writes.
+ */
+export function createScopedClient(app: PrismaClient, admin: PrismaClient) {
   assertAllModelsClassified();
 
-  const ext: any = base.$extends({
-    name: 'tenant-scope',
-    client: {
-      // Raw SQL bypasses model scoping entirely. Disabled on the scoped client; use `base` deliberately if ever needed.
-      $queryRaw() { throw new TenantIsolationError('Raw queries are disabled on the tenant-scoped client'); },
-      $queryRawUnsafe() { throw new TenantIsolationError('Raw queries are disabled on the tenant-scoped client'); },
-      $executeRaw() { throw new TenantIsolationError('Raw queries are disabled on the tenant-scoped client'); },
-      $executeRawUnsafe() { throw new TenantIsolationError('Raw queries are disabled on the tenant-scoped client'); },
-    },
+  /** Owner connection, usable ONLY inside an explicit bypass; every operation writes an audit row before it runs. */
+  const bypassClient: any = admin.$extends({
+    name: 'audited-bypass',
     query: {
       $allModels: {
         async $allOperations({ model, operation, args, query }: any) {
           const store = RequestContext.get();
+          if (!store?.bypass) throw new TenantIsolationError(`${model}.${operation}: owner connection used outside an audited bypass`);
+          await writeAudit(admin, store.bypass, model, operation, args);
+          return query(args);
+        },
+      },
+    },
+  });
 
-          // 1. Explicit, audited superadmin/system bypass.
+  /** Application connection with where/data rewriting and the RLS pin. */
+  const scoped: any = app.$extends({
+    name: 'tenant-scope',
+    query: {
+      $allModels: {
+        async $allOperations(params: any) {
+          const { model, operation, args, query } = params;
+          const store = RequestContext.get();
+          // Set by Prisma when this operation runs inside db.$transaction() (interactive or batch), where the
+          // scope was pinned on the transaction's connection by scopedTransaction() below.
+          const inTransaction = Boolean(params.__internalParams?.transaction);
+
+          // 1. Explicit, audited superadmin/system bypass -> owner connection.
           if (store?.bypass) {
-            await writeAudit(base, store.bypass, model, operation, args);
-            return query(args);
+            if (inTransaction) throw new TenantIsolationError(`${model}.${operation}: bypass inside a tenant-scoped transaction`);
+            return bypassClient[delegateOf(model)][operation](args);
           }
 
           if (!KNOWN_OPS.has(operation)) throw new TenantIsolationError(`Operation ${model}.${operation} is not allowed`);
           const scope = SCOPES[model];
-          if (!scope) throw new TenantIsolationError(`Model ${model} is not classified for tenant isolation`);
-
-          // 2. Resolve the scope value from context. No context => fail closed.
-          let val: string | null;
-          if (store?.tenantId) val = store.tenantId;
-          else if (store?.platform) {
-            if (scope.kind !== 'direct' || !scope.nullable) {
-              throw new TenantIsolationError(`Platform scope cannot access ${model}`);
-            }
-            val = null;
-          } else {
-            throw new TenantIsolationError(`No tenant context for ${model}.${operation}`);
-          }
+          const val = resolveScope(model, operation);
 
           if (APPEND_ONLY.has(model) && !CREATE_OPS.has(operation) && !READ_OPS.has(operation)) {
             throw new TenantIsolationError(`${model} is append-only`);
           }
 
-          return query(await scopeArgs(model, scope, operation, args ?? {}, val));
+          const scopedArgs = await scopeArgs(model, scope, operation, args ?? {}, val.tenantId);
+          if (inTransaction) return query(scopedArgs);
+          // 2. Outside a transaction: pin + query atomically, so RLS sees the tenant and the pin dies with the transaction.
+          const [, result] = await app.$transaction([pinScope(app, val.tenantId, val.platform), query(scopedArgs)]);
+          return result;
         },
       },
     },
   });
+
+  /**
+   * db.$transaction(): pins the scope on the transaction's connection first, then runs the caller's work on a
+   * transaction client that still carries the tenant-scope hooks. Under a bypass the transaction runs on the owner
+   * connection (audited per operation).
+   */
+  async function scopedTransaction(this: any, arg: any, opts?: any): Promise<any> {
+    const store = RequestContext.get();
+    if (store?.bypass) {
+      if (typeof arg !== 'function') throw new TenantIsolationError('Batch $transaction([...]) is not supported inside a bypass; use an interactive transaction');
+      return bypassClient.$transaction((tx: any) => arg(withoutRaw(tx)), opts);
+    }
+    if (!store?.tenantId && !store?.platform) throw new TenantIsolationError('No tenant context for $transaction');
+    const val: ScopeValue = store.tenantId ? { tenantId: store.tenantId, platform: false } : { tenantId: null, platform: true };
+    if (typeof arg === 'function') {
+      return scoped.$transaction(async (tx: any) => {
+        await pinScope(tx, val.tenantId, val.platform);
+        return arg(withoutRaw(tx));
+      }, opts);
+    }
+    return scoped.$transaction([pinScope(app, val.tenantId, val.platform), ...arr(arg)], opts).then((r: any[]) => r.slice(1));
+  }
+
+  const rawDisabled = () => { throw new TenantIsolationError('Raw queries are disabled on the tenant-scoped client'); };
+  const ext: any = scoped.$extends({
+    name: 'tenant-scope-client',
+    client: {
+      // Raw SQL bypasses model scoping. Disabled on the scoped client; use `base` deliberately if ever needed.
+      $queryRaw: rawDisabled, $queryRawUnsafe: rawDisabled, $executeRaw: rawDisabled, $executeRawUnsafe: rawDisabled,
+      $transaction: scopedTransaction,
+    },
+  });
+
+  /** Transaction clients expose raw methods (we need one for the pin); hide them from feature code. */
+  function withoutRaw(tx: any) {
+    return new Proxy(tx, {
+      get(target, prop, receiver) {
+        if ((RAW_METHODS as readonly string[]).includes(prop as string)) return rawDisabled;
+        if (prop === '$transaction') return () => { throw new TenantIsolationError('Nested transactions are not supported'); };
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+  }
 
   async function scopeArgs(model: string, scope: Scope, operation: string, args: any, val: string | null) {
     // Self (tenants table): no creating/deleting tenants from tenant code.
@@ -166,11 +256,9 @@ export function createScopedClient(base: PrismaClient) {
       if (operation === 'create') out.data = await guardCreate(model, scope, args.data, val);
       else out.data = await Promise.all(arr(args.data).map((d: any) => guardCreate(model, scope, d, val)));
       if (operation === 'createMany' && !Array.isArray(args.data)) out.data = out.data[0];
-      if (scope.kind === 'viaProduct') await assertProductsOwned(arr(out.data).map((d: any) => d.productId));
     } else if (operation === 'upsert') {
       out.create = await guardCreate(model, scope, args.create, val);
       out.update = await guardUpdate(model, scope, args.update, val);
-      if (scope.kind === 'viaProduct') await assertProductsOwned([out.create.productId]);
     } else if (operation.startsWith('update')) {
       out.data = await guardUpdate(model, scope, args.data, val);
     }
@@ -181,7 +269,6 @@ export function createScopedClient(base: PrismaClient) {
     switch (scope.kind) {
       case 'direct': return { tenantId: val };
       case 'self': return { id: val };
-      case 'viaProduct': return { product: { tenantId: val } };
     }
   }
 
@@ -192,10 +279,6 @@ export function createScopedClient(base: PrismaClient) {
       if ('tenant' in data) throw new TenantIsolationError(`${model}: pass scalars, not the tenant relation`);
       if (data.tenantId !== undefined && data.tenantId !== val) throw new TenantIsolationError(`${model}: tenantId does not match the active tenant`);
       return { ...data, tenantId: val };
-    }
-    if (scope.kind === 'viaProduct') {
-      if ('product' in data) throw new TenantIsolationError('Variant: pass productId, not the product relation');
-      if (typeof data.productId !== 'string') throw new TenantIsolationError('Variant: productId is required');
     }
     return data;
   }
@@ -208,19 +291,7 @@ export function createScopedClient(base: PrismaClient) {
       if (data.tenantId !== undefined && data.tenantId !== val) throw new TenantIsolationError(`${model}: cannot move rows between tenants`);
     }
     if (scope.kind === 'self' && 'id' in data) throw new TenantIsolationError('Cannot change tenant id');
-    if (scope.kind === 'viaProduct') {
-      if ('product' in data) throw new TenantIsolationError('Variant: pass productId, not the product relation');
-      if (typeof data.productId === 'string') await assertProductsOwned([data.productId]);
-      else if (data.productId !== undefined) throw new TenantIsolationError('Variant: invalid productId');
-    }
     return data;
-  }
-
-  /** Variants carry no tenant_id: make sure every referenced product belongs to the active tenant. */
-  async function assertProductsOwned(ids: string[]) {
-    const unique = [...new Set(ids)];
-    const found = await ext.product.findMany({ where: { id: { in: unique } }, select: { id: true } });
-    if (found.length !== unique.length) throw new TenantIsolationError('Variant: product does not belong to the active tenant');
   }
 
   /**
@@ -253,12 +324,12 @@ export function createScopedClient(base: PrismaClient) {
     }
   }
 
-  return ext as typeof base;
+  return ext as typeof app;
 }
 
 // ---- audit -----------------------------------------------------------------------------------
 async function writeAudit(
-  base: PrismaClient,
+  admin: PrismaClient,
   bypass: { kind: string; actorId: string | null; reason: string },
   model: string,
   operation: string,
@@ -267,7 +338,7 @@ async function writeAudit(
   const w = args?.where;
   const d = Array.isArray(args?.data) ? args.data[0] : args?.data;
   const tenantId = [w?.tenantId, d?.tenantId, model === 'Tenant' ? w?.id : undefined].find((x) => typeof x === 'string') ?? null;
-  await base.auditLog.create({
+  await admin.auditLog.create({
     data: {
       actorId: bypass.actorId,
       tenantId,

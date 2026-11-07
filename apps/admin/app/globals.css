@@ -1,0 +1,42 @@
+@import "tailwindcss";
+
+/* BMStore admin: warm, calm, high-contrast. Tokens first so a store's own colours could be mapped later. */
+@theme {
+  --color-ink: #1b1f24;
+  --color-ink-2: #4b5563;
+  --color-ink-3: #8a94a6;
+  --color-paper: #f6f4ef;
+  --color-card: #ffffff;
+  --color-line: #e6e2d9;
+  --color-brand: #0f6e66;
+  --color-brand-2: #0b5751;
+  --color-brand-soft: #e3f1ef;
+  --color-accent: #c9731a;
+  --color-accent-soft: #fdebd6;
+  --color-ok: #15803d;
+  --color-ok-soft: #dcfce7;
+  --color-bad: #b42318;
+  --color-bad-soft: #fee4e2;
+  --color-note: #7c5a00;
+  --color-note-soft: #fdf3c7;
+  --font-sans: "Noto Sans", "Noto Sans Tamil", "Latha", "Nirmala UI", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --radius-xl: 1rem;
+  --shadow-card: 0 1px 2px rgba(27, 31, 36, 0.06), 0 8px 24px -16px rgba(27, 31, 36, 0.25);
+}
+
+html { -webkit-tap-highlight-color: transparent; }
+body { @apply bg-paper text-ink antialiased; font-size: 16px; }
+input, select, textarea, button { font: inherit; }
+::selection { background: var(--color-brand-soft); }
+
+@utility tap { min-height: 3rem; }
+@utility card { @apply bg-card border border-line rounded-xl shadow-card; }
+@utility field { @apply w-full tap rounded-xl border border-line bg-card px-4 text-ink placeholder:text-ink-3 focus:outline-none focus:ring-2 focus:ring-brand/40 focus:border-brand; }
+@utility label { @apply block text-sm font-medium text-ink-2 mb-1.5; }
+@utility btn { @apply inline-flex items-center justify-center gap-2 tap rounded-xl px-5 font-semibold select-none transition active:scale-[0.99] disabled:opacity-50 disabled:pointer-events-none; }
+@utility btn-primary { @apply btn bg-brand text-white hover:bg-brand-2; }
+@utility btn-secondary { @apply btn bg-card border border-line text-ink hover:bg-paper; }
+@utility btn-danger { @apply btn bg-bad-soft text-bad hover:bg-red-100; }
+@utility btn-ghost { @apply btn text-brand hover:bg-brand-soft; }
+@utility chip { @apply inline-flex items-center h-10 px-4 rounded-full border border-line bg-card text-sm font-medium whitespace-nowrap; }
+@utility chip-on { @apply chip bg-ink text-white border-ink; }

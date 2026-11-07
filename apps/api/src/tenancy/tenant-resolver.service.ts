@@ -46,7 +46,7 @@ export class TenantResolver {
   }
 
   cacheKey(host: string) {
-    return `tenant:host:${host}`;
+    return `tenant:host:v2:${host}`; // v2: status/plan are enums since the vocabulary migration (old entries must not be read)
   }
 
   async resolve(rawHost: string | undefined): Promise<Resolution> {

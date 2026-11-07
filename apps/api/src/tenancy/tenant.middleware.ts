@@ -2,6 +2,8 @@ import { ForbiddenException, Injectable, NestMiddleware, NotFoundException } fro
 import { randomUUID } from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import { RequestContext, RequestStore } from '../common/request-context';
+import { BLOCKED_MESSAGE, SERVES_REQUESTS } from './plans';
+import { markPreview } from './preview';
 import { TenantResolver } from './tenant-resolver.service';
 
 /**
@@ -9,7 +11,8 @@ import { TenantResolver } from './tenant-resolver.service';
  * request inside an AsyncLocalStorage context carrying that tenant.
  *  - platform host (root/admin/api/IP)  -> no tenant in context
  *  - unknown store host                 -> 404
- *  - suspended or expired store         -> 403
+ *  - suspended / parked or expired store -> 403 (LIVE stores are served; BUILDING stores are served as previews:
+ *    noindex header + meta tag + ribbon, see preview.ts)
  */
 @Injectable()
 export class TenantMiddleware implements NestMiddleware {
@@ -25,8 +28,9 @@ export class TenantMiddleware implements NestMiddleware {
         if (r.kind === 'unknown') throw new NotFoundException('Store not found');
         if (r.kind === 'tenant') {
           const t = r.tenant;
-          if (t.status !== 'active') throw new ForbiddenException('Store suspended');
+          if (!SERVES_REQUESTS[t.status]) throw new ForbiddenException(BLOCKED_MESSAGE[t.status] ?? 'Store unavailable');
           if (t.expiresAt && new Date(t.expiresAt) <= new Date()) throw new ForbiddenException('Store subscription expired');
+          if (t.status === 'BUILDING') markPreview(res);
           store.tenant = t;
           store.tenantId = t.id;
         }

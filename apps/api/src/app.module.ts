@@ -1,12 +1,24 @@
 import { Global, Module } from '@nestjs/common';
 import { StoreModule } from './store/store.module';
+import { CatalogModule } from './catalog/catalog.module';
+import { OrdersModule } from './orders/orders.module';
+import { CustomersModule } from './crm/customers';
+import { CouponsModule } from './crm/coupons';
+import { PagesModule } from './content/pages';
+import { SettingsModule } from './settings/settings';
+import { ImportModule } from './imports/import.module';
+import { MediaModule } from './media/media.module';
+import { StorageModule } from './storage/storage.module';
+import { LimitsModule } from './limits/limits';
 import { SuperadminModule } from './superadmin/superadmin.module';
 import { AuthModule } from './auth/auth.module';
 import { AppConfig } from './config/app-config';
 import { HealthController } from './health/health.controller';
+import { MailModule } from './mail/mail.module';
 import { PrismaService } from './prisma/prisma.service';
 import { RedisService } from './redis/redis.service';
 import { TenancyModule } from './tenancy/tenancy.module';
+import { UploadsModule } from './uploads/uploads.module';
 
 @Global()
 @Module({
@@ -15,5 +27,5 @@ import { TenancyModule } from './tenancy/tenancy.module';
 })
 class CoreModule {}
 
-@Module({ imports: [CoreModule, TenancyModule, AuthModule, SuperadminModule, StoreModule], controllers: [HealthController] })
+@Module({ imports: [CoreModule, MailModule, StorageModule, TenancyModule, AuthModule, SuperadminModule, StoreModule, UploadsModule, CatalogModule, OrdersModule, CustomersModule, CouponsModule, PagesModule, SettingsModule, ImportModule, MediaModule, LimitsModule], controllers: [HealthController] })
 export class AppModule {}

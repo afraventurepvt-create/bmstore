@@ -1,10 +1,21 @@
-import { INestApplication } from '@nestjs/common';
+import { Controller, Get, Header, INestApplication } from '@nestjs/common';
+import { Test } from '@nestjs/testing';
 import { PrismaClient } from '@prisma/client';
 import { execSync } from 'node:child_process';
 import request from 'supertest';
+import { AppModule } from '../src/app.module';
+import { configureApp } from '../src/app.setup';
+import { Public } from '../src/auth/decorators';
 import { AuthService } from '../src/auth/auth.service';
 import { PrismaService } from '../src/prisma/prisma.service';
-import { createApp, deleteTenants, uniq } from './helpers';
+import { deleteTenants, uniq } from './helpers';
+
+/** Stand-in for a storefront page until one exists. */
+@Controller('probe')
+class PageController {
+  @Public() @Get('page') @Header('Content-Type', 'text/html; charset=utf-8')
+  page() { return '<!doctype html><html><head><title>t</title></head><body><h1>Hello</h1></body></html>'; }
+}
 
 describe('superadmin API', () => {
   let app: INestApplication;
@@ -25,7 +36,10 @@ describe('superadmin API', () => {
   };
 
   beforeAll(async () => {
-    app = await createApp();
+    const mod = await Test.createTestingModule({ imports: [AppModule], controllers: [PageController] }).compile();
+    app = mod.createNestApplication();
+    configureApp(app);
+    await app.init();
     prisma = app.get(PrismaService);
     base = prisma.base;
     const auth = app.get(AuthService);
@@ -53,10 +67,10 @@ describe('superadmin API', () => {
 
   describe('create', () => {
     it('creates tenant + settings + theme + owner; owner can log in right away; no razorpay fields leak', async () => {
-      const t = newTenant({ gstNumber: '29ABCDE1234F1Z5', plan: 'pro' });
+      const t = newTenant({ gstNumber: '29ABCDE1234F1Z5', plan: 'STANDARD' });
       const res = await admin('post', '/superadmin/tenants').send(t).expect(201);
       created.push(res.body.id);
-      expect(res.body).toMatchObject({ slug: t.slug, plan: 'pro', status: 'active', razorpayConfigured: false });
+      expect(res.body).toMatchObject({ slug: t.slug, plan: 'STANDARD', status: 'BUILDING', razorpayConfigured: false });
       expect(JSON.stringify(res.body)).not.toMatch(/razorpayKeyEnc|razorpaySecretEnc|passwordHash/);
       expect(await base.settings.count({ where: { tenantId: res.body.id } })).toBe(1);
       expect(await base.themeConfig.count({ where: { tenantId: res.body.id } })).toBe(1);
@@ -83,7 +97,8 @@ describe('superadmin API', () => {
       await admin('post', '/superadmin/tenants').send(newTenant({ subdomain: 'admin' })).expect(400);
       await admin('post', '/superadmin/tenants').send(newTenant({ customDomain: 'shop.localhost' })).expect(400);
       await admin('post', '/superadmin/tenants').send(newTenant({ owner: { email: 'a@b.co', password: 'short' } })).expect(400);
-      await admin('post', '/superadmin/tenants').send(newTenant({ status: 'active' })).expect(400); // not whitelisted
+      await admin('post', '/superadmin/tenants').send(newTenant({ status: 'LIVE' })).expect(400); // not whitelisted
+      await admin('post', '/superadmin/tenants').send(newTenant({ plan: 'pro' })).expect(400); // not in the enum
       await admin('post', '/superadmin/tenants').send({ name: 'x' }).expect(400);
     });
   });
@@ -117,13 +132,48 @@ describe('superadmin API', () => {
     it('suspend blocks the storefront and the store API at once; unsuspend restores', async () => {
       await api().get('/health').set('Host', host).expect(200);
       const s = await admin('post', `/superadmin/tenants/${id}/suspend`).send({ reason: 'non-payment' }).expect(200);
-      expect(s.body.status).toBe('suspended');
+      expect(s.body.status).toBe('SUSPENDED');
       await api().get('/health').set('Host', host).expect(403);
       await api().get('/auth/me').set('Host', host).set('Authorization', `Bearer ${ownerTok}`).expect(403);
       await api().post('/auth/login').set('Host', host).send(t.owner).expect(403);
       const u = await admin('post', `/superadmin/tenants/${id}/unsuspend`).send({}).expect(200);
-      expect(u.body.status).toBe('active');
+      expect(u.body.status).toBe('LIVE');
       await api().get('/health').set('Host', host).expect(200);
+    });
+
+    it('BUILDING stores are previews: noindex header on every response, meta tag + ribbon in HTML; LIVE stores are clean', async () => {
+      await admin('post', `/superadmin/tenants/${id}/status`).send({ status: 'BUILDING' }).expect(200);
+      const json = await api().get('/health').set('Host', host).expect(200);
+      expect(json.headers['x-robots-tag']).toBe('noindex, nofollow');
+      expect(json.body).toEqual({ ok: true, tenant: t.slug }); // JSON untouched
+      const page = await api().get('/probe/page').set('Host', host).expect(200);
+      expect(page.headers['x-robots-tag']).toBe('noindex, nofollow');
+      expect(page.text).toContain('<head><meta name="robots" content="noindex, nofollow">');
+      expect(page.text).toMatch(/<body>\s*<div data-bmstore-preview[^>]*>Preview<\/div>/);
+      expect(page.text).toContain('<h1>Hello</h1>');
+      expect(Number(page.headers['content-length'])).toBe(Buffer.byteLength(page.text));
+      await admin('post', `/superadmin/tenants/${id}/status`).send({ status: 'LIVE' }).expect(200);
+      const live = await api().get('/probe/page').set('Host', host).expect(200);
+      expect(live.headers['x-robots-tag']).toBeUndefined();
+      expect(live.text).not.toMatch(/noindex|data-bmstore-preview/);
+      expect((await api().get('/health').set('Host', host).expect(200)).headers['x-robots-tag']).toBeUndefined();
+      // platform hosts are never previews
+      expect((await api().get('/health').set('Host', 'admin.localhost').expect(200)).headers['x-robots-tag']).toBeUndefined();
+    });
+
+    it('generic status endpoint: PARKED blocks, BUILDING serves (admins can work), bogus values rejected', async () => {
+      const p = await admin('post', `/superadmin/tenants/${id}/status`).send({ status: 'PARKED', reason: 'churned' }).expect(200);
+      expect(p.body.status).toBe('PARKED');
+      expect((await api().get('/health').set('Host', host).expect(403)).body.message).toBe('Store parked');
+      const b = await admin('post', `/superadmin/tenants/${id}/status`).send({ status: 'BUILDING' }).expect(200);
+      expect(b.body.status).toBe('BUILDING');
+      await api().get('/health').set('Host', host).expect(200);
+      await api().get('/auth/me').set('Host', host).set('Authorization', `Bearer ${ownerTok}`).expect(200);
+      await admin('post', `/superadmin/tenants/${id}/status`).send({ status: 'active' }).expect(400);
+      await admin('post', `/superadmin/tenants/${id}/status`).send({}).expect(400);
+      await admin('post', `/superadmin/tenants/${id}/status`).send({ status: 'LIVE' }).expect(200);
+      const logs = await base.auditLog.findMany({ where: { actorId: adminId, tenantId: id, action: 'tenant.status_set' } });
+      expect(logs.map((l) => (l.meta as any).status).sort()).toEqual(['BUILDING', 'BUILDING', 'PARKED']);
     });
 
     it('set expiry: past blocks, null clears, garbage rejected', async () => {
@@ -147,7 +197,7 @@ describe('superadmin API', () => {
     it('writes semantic AND per-query audit rows attributed to the superadmin', async () => {
       const logs = await base.auditLog.findMany({ where: { actorId: adminId, tenantId: id }, orderBy: { createdAt: 'asc' } });
       const actions = logs.map((l) => l.action);
-      expect(actions).toEqual(expect.arrayContaining(['tenant.suspended', 'tenant.unsuspended', 'tenant.expiry_set', 'db.Tenant.update']));
+      expect(actions).toEqual(expect.arrayContaining(['tenant.suspended', 'tenant.unsuspended', 'tenant.status_set', 'tenant.expiry_set', 'db.Tenant.update']));
       const sus = logs.find((l) => l.action === 'tenant.suspended')!;
       expect((sus.meta as any).reason).toBe('non-payment');
       // per-query rows exist for the creation transaction too

@@ -27,5 +27,37 @@ services:
       timeout: 3s
       retries: 10
 
+  # Local object storage (S3-compatible). Production: R2 or S3 via the same S3_* env vars.
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: bmstore
+      MINIO_ROOT_PASSWORD: bmstore-minio
+    ports:
+      - "9000:9000"   # S3 API  -> S3_ENDPOINT=http://localhost:9000
+      - "9001:9001"   # web console
+    volumes:
+      - miniodata:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Creates the bucket once and makes it publicly readable (images are served straight from it).
+  minio-init:
+    image: minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 bmstore bmstore-minio &&
+      mc mb --ignore-existing local/bmstore &&
+      mc anonymous set download local/bmstore
+      "
+
 volumes:
   pgdata:
+  miniodata:

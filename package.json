@@ -2,11 +2,21 @@
   "name": "bmstore",
   "private": true,
   "version": "0.1.0",
-  "workspaces": ["apps/*"],
+  "workspaces": [
+    "apps/*"
+  ],
   "scripts": {
     "build": "npm run build -w apps/api",
     "test": "npm test -w apps/api",
     "test:gate": "npm run test:gate -w apps/api"
   },
-  "engines": { "node": ">=20" }
+  "engines": {
+    "node": ">=20"
+  },
+  "overrides": {
+    "multer": "2.5.0",
+    "deepmerge-ts": "^8.0.2",
+    "uuid": "^11.1.1",
+    "postcss": "^8.5.23"
+  }
 }
