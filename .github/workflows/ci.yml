@@ -108,3 +108,6 @@ jobs:
         working-directory: apps/api
       - run: npm test
         working-directory: apps/api
+      - name: Admin UI typecheck and build
+        run: npm run typecheck && npm run build
+        working-directory: apps/admin

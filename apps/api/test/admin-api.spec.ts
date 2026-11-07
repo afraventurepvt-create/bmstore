@@ -280,6 +280,13 @@ describe('store admin API', () => {
     });
   });
 
+  it('GET /store/public is open and carries only public facts', async () => {
+    const r = await api().get('/store/public').set('Host', host(A)).expect(200);
+    expect(r.body).toMatchObject({ slug: A.slug, status: 'BUILDING', theme: { primaryColor: '#0f766e' } });
+    expect(JSON.stringify(r.body)).not.toMatch(/razorpay|gst|plan|email/i);
+    await api().get('/store/public').set('Host', 'admin.localhost').expect(404);
+  });
+
   it("other store's token is refused on every admin route", async () => {
     for (const p of ['/store/products', '/store/categories', '/store/orders', '/store/customers', '/store/coupons', '/store/pages', '/store/settings', '/store/theme', '/store/profile', '/store/dashboard']) {
       await api().get(p).set('Host', host(A)).set('Authorization', `Bearer ${ownerB}`).expect(403);

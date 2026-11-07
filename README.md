@@ -4,7 +4,8 @@ One multi-tenant ecommerce platform. Each client store is a tenant; one codebase
 Node.js · NestJS 11 · Prisma 6 · PostgreSQL 16 (single DB, `tenant_id` on every tenant-scoped row, row-level security on every table) · Redis · TypeScript.
 
 ```
-apps/api      NestJS API (tenancy, RLS, auth + login protection + password reset, superadmin, encryption, presigned uploads, isolation gate)
+apps/api      NestJS API (tenancy, RLS, auth, store admin API, import, media, limits, superadmin, isolation gate)
+apps/admin    Next.js store-owner admin (mobile-first; talks to the API through a same-origin cookie proxy)
 ```
 
 ## Run it on your laptop
@@ -20,6 +21,10 @@ npm run start:dev -w apps/api              # http://localhost:3000
 ```
 
 Stores are reached by Host: `mystore.localhost:3000` (dev), `mystore.bmstore.in` (prod), or a custom domain.
+
+Store admin UI: `npm run dev -w apps/admin` (port 3001), then open the store's host on that port, e.g.
+`http://mystore.localhost:3001`. The admin forwards the browser's Host to the API (`API_URL`, default `http://localhost:3000`),
+so it manages whichever store it is opened on; tokens live in httpOnly cookies set by its `/api/auth/*` route handlers.
 The superadmin API lives on a platform host: `admin.localhost:3000/superadmin/tenants`.
 
 ## Tests

@@ -35,6 +35,17 @@ npm run start -w apps/api        # node apps/api/dist/main.js
 On boot the API checks that row-level security is enforceable (app role not a superuser, no BYPASSRLS, owns no table;
 every table has a policy). If it is not, it logs the reason and exits.
 
+## Admin UI (apps/admin)
+
+```bash
+npm run build -w apps/admin
+API_URL=http://127.0.0.1:3000 npm run start -w apps/admin     # port 3001
+```
+
+Serve it on the store hosts (e.g. `*.bmstore.in` and custom domains) on a path or port of your choosing; it reads the
+request `Host` and forwards it to the API, so one deployment serves every store. The API must be reachable from the
+admin server at `API_URL`. Both set `X-Robots-Tag: noindex`.
+
 ## Environment
 
 Copy `apps/api/.env.example`. Required: `DATABASE_URL`, `DATABASE_ADMIN_URL`, `REDIS_URL`, `JWT_ACCESS_SECRET`
