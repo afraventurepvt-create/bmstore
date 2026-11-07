@@ -20,7 +20,7 @@ enum UserRole {
   staff
 }
 
-// Vocabulary is fixed (do not add synonyms): see PREWORK_REPORT.md.
+// Vocabulary is fixed (do not add synonyms): see ../../PREWORK_REPORT.md.
 enum TenantPlan {
   STARTER // at most 10 products (enforced by a DB trigger, migration 0006)
   STANDARD // unlimited within fair use

@@ -1,6 +1,6 @@
 # Pre-work report (decisions A–E)
 
-Status: **all five done, one commit each, 379/379 tests passing locally** (was 294). `npm audit`: **0 high** (production
+Status: **all five done, one commit each, 381/381 tests passing locally** (was 294). Follow-up commit: STARTER cap counts live products only; BUILDING stores served as previews; `DEPLOY.md`. `npm audit`: **0 high** (production
 dependencies: 0 vulnerabilities; 7 low, all dev-only, see E).
 
 | # | Commit | What changed |
@@ -76,14 +76,16 @@ Judgement calls, please confirm:
    convention. Cheap to change.
 2. **`coupons.value`** for `PERCENT` coupons is a whole percent (CHECK ≤ 100); for `FLAT` it is paise.
 3. **`Int` (32-bit)** caps a single amount at ₹2,14,74,836.47. Plenty for these stores; say so if you want `BigInt`.
-4. **STARTER = 10 products** is enforced by a `BEFORE INSERT` trigger on `products` that locks the tenant row
-   (concurrent inserts serialise; `createMany` past the cap is rejected whole; binds the owner connection too).
+4. **STARTER = 10 live products** (DRAFT or ACTIVE; archived ones free a slot) is enforced by a trigger on
+   `products` (`BEFORE INSERT OR UPDATE OF status`) that locks the tenant row (concurrent inserts serialise;
+   `createMany` past the cap is rejected whole; un-archiving at the cap is refused; binds the owner connection too).
    `PLAN_LIMITS` in `src/tenancy/plans.ts` is exported for the products API to give a friendly 4xx first. A
-   STANDARD→STARTER downgrade keeps existing products and blocks new ones. Archived products count.
-5. **Status semantics**: `BUILDING` and `LIVE` are served on the store host (admins can set the store up);
-   `SUSPENDED` and `PARKED` answer 403 (`Store suspended` / `Store parked`). New tenants start `BUILDING`. The public
-   storefront, when it lands, must additionally require `LIVE`; `SERVES_REQUESTS` in `plans.ts` is the single place
-   to adjust. Superadmin API: `POST :id/status {status}` (any value) and `PATCH :id/plan {plan}` were added; the
+   STANDARD→STARTER downgrade keeps existing products and blocks new ones.
+5. **Status semantics**: `LIVE` is served normally; `BUILDING` is served as a **preview** (every response carries
+   `X-Robots-Tag: noindex, nofollow`, HTML responses get a `<meta name="robots">` tag and a "Preview" ribbon,
+   injected at the response layer so any future renderer is covered: `src/tenancy/preview.ts`); `SUSPENDED` and
+   `PARKED` answer 403 (`Store suspended` / `Store parked`). New tenants start `BUILDING`. `SERVES_REQUESTS` in
+   `plans.ts` is the single place to adjust. Superadmin API: `POST :id/status {status}` (any value) and `PATCH :id/plan {plan}` were added; the
    `suspend`/`unsuspend` shortcuts remain (`unsuspend` → `LIVE`). Redis tenant-cache key bumped to `v2`.
 6. `UserRole` (`superadmin|store_owner|staff`) was not in the list and is unchanged.
 
