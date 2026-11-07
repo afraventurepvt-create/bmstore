@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { INestApplication } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
+import { AppConfig } from '../src/config/app-config';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { TenantIsolationError } from '../src/prisma/tenant-scope';
 import { createApp, deleteTenants, makeTenant, uniq } from './helpers';
@@ -132,6 +133,33 @@ describe('Prisma tenant-scope extension', () => {
     const [x, y] = await asA(() => db.$transaction([db.product.count(), db.coupon.count()]));
     expect(typeof x).toBe('number');
     expect(typeof y).toBe('number');
+  });
+
+  it('inside db.$transaction the tx client is scoped; a stray db.* call still works (own transaction) and never widens', async () => {
+    const out = await asA(() =>
+      db.$transaction(async (tx: any) => {
+        const inTx = await tx.product.count();
+        const outside = await db.product.count(); // not part of the transaction, but still pinned to tenant A on its own
+        return { inTx, outside };
+      }),
+    );
+    expect(out.inTx).toBe(out.outside);
+    expect(out.inTx).toBe(await base.product.count({ where: { tenantId: A.id } }));
+    await expect(asA(() => db.$transaction(async (tx: any) => tx.$executeRawUnsafe('select 1')))).rejects.toThrow(/Raw queries are disabled/);
+    await expect(asA(() => db.$transaction(async (tx: any) => tx.$transaction(async () => 1)))).rejects.toThrow(/Nested transactions/);
+    // a bypass may not be opened INSIDE a tenant transaction (its statements would run on another connection)
+    await expect(asA(() => db.$transaction(async (tx: any) => prisma.asSystem('x', () => tx.product.findMany())))).rejects.toThrow(/bypass inside a tenant-scoped transaction/);
+    await expect(db.$transaction(async () => 1)).rejects.toThrow(/No tenant context/);
+  });
+
+  it('refuses to boot when the application connection could sidestep row-level security', async () => {
+    const cfg = app.get(AppConfig);
+    const bad = new PrismaService({ ...cfg, databaseUrl: cfg.databaseAdminUrl } as AppConfig); // owner/superuser as the app role
+    await expect(bad.onModuleInit()).rejects.toThrow(/Row-level security is not enforceable/);
+    await bad.onModuleDestroy();
+    const good = new PrismaService(cfg);
+    await expect(good.onModuleInit()).resolves.toBeUndefined();
+    await good.onModuleDestroy();
   });
 
   it('platform scope sees only tenant_id NULL users and nothing else', async () => {

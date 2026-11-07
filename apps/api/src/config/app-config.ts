@@ -10,7 +10,10 @@ export class AppConfig {
   readonly port = Number(process.env.PORT ?? 3000);
   readonly rootDomain = (process.env.ROOT_DOMAIN ?? 'localhost').toLowerCase();
   readonly trustProxy = process.env.TRUST_PROXY === '1';
+  /** Application role: owns no tables, NOBYPASSRLS. Row-level security applies to every query. */
   readonly databaseUrl = required('DATABASE_URL');
+  /** Owner role: migrations and the audited superadmin bypass. Exempt from RLS. Never used for tenant traffic. */
+  readonly databaseAdminUrl = required('DATABASE_ADMIN_URL');
   readonly redisUrl = process.env.REDIS_URL ?? 'redis://localhost:6379';
   readonly tenantCacheTtl = Number(process.env.TENANT_CACHE_TTL_SECONDS ?? 300);
   /** Short negative cache so random Host headers cannot hammer Postgres. */

@@ -1,15 +1,17 @@
 // BMStore – single database, multi-tenant. Every tenant-scoped row carries tenant_id.
 // Isolation layers: (1) Prisma client extension auto-injects tenantId (src/prisma),
-// (2) composite (tenant_id, x) foreign keys make cross-tenant references impossible in the DB,
-// (3) the gate test (test/gate.e2e-spec.ts) proves it for EVERY model.
+// (2) Postgres row-level security on every table (migration 0004), pinned per transaction via set_config,
+// (3) composite (tenant_id, x) foreign keys make cross-tenant references impossible in the DB,
+// (4) the gate test (test/gate.spec.ts) proves it for EVERY model, with and without the app layer.
 
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL") // application role: no table ownership, NOBYPASSRLS -> row-level security applies
+  directUrl = env("DATABASE_ADMIN_URL") // owner role: migrations and the audited superadmin bypass (exempt from RLS)
 }
 
 enum UserRole {

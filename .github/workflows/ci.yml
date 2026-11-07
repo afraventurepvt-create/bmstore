@@ -13,7 +13,9 @@ concurrency:
 
 # Values below are throw-away, test-only credentials for the service containers (not real secrets).
 env:
-  DATABASE_URL: postgresql://bmstore:bmstore@localhost:5432/bmstore_test?schema=public
+  # owner role (migrations, audited bypass) and the RLS-enforced application role the API runs as
+  DATABASE_ADMIN_URL: postgresql://bmstore:bmstore@localhost:5432/bmstore_test?schema=public
+  DATABASE_URL: postgresql://bmstore_app:bmstore_app@localhost:5432/bmstore_test?schema=public
   REDIS_URL: redis://localhost:6379/15
   ROOT_DOMAIN: localhost
   JWT_ACCESS_SECRET: ci-only-jwt-secret-ci-only-jwt-secret-0123456789
@@ -55,6 +57,9 @@ jobs:
       - name: Apply migrations
         run: npx prisma migrate deploy
         working-directory: apps/api
+      - name: Create the RLS-enforced application role
+        run: npm run db:app-role
+        working-directory: apps/api
       - name: Run the gate test
         run: npm run test:gate
         working-directory: apps/api
@@ -92,8 +97,10 @@ jobs:
         working-directory: apps/api
       - run: npx prisma migrate deploy
         working-directory: apps/api
+      - run: npm run db:app-role
+        working-directory: apps/api
       - name: Migrations match schema.prisma (no drift)
-        run: npx prisma migrate diff --from-url "$DATABASE_URL" --to-schema-datamodel prisma/schema.prisma --exit-code
+        run: npx prisma migrate diff --from-url "$DATABASE_ADMIN_URL" --to-schema-datamodel prisma/schema.prisma --exit-code
         working-directory: apps/api
       - run: npm run typecheck
         working-directory: apps/api

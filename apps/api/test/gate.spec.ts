@@ -3,8 +3,10 @@
  * Two tenants (A, B). A row is written in EVERY model for each tenant (through the scoped client, as that
  * tenant). Then, for EVERY model and in BOTH directions (A->B and B->A), we assert the other tenant's rows can
  * not be read, updated, deleted, upserted over, re-parented or referenced - by any operation the client offers,
- * including unique-key, compound-key, relation-filter and relation-traversal routes. Finally we assert B's data
- * is byte-for-byte unchanged and that the explicit superadmin bypass is audited.
+ * including unique-key, compound-key, relation-filter and relation-traversal routes. Then the same attacks are
+ * repeated WITHOUT the app layer (a plain Prisma client and raw SQL on the application role) to prove the
+ * database's row-level security holds on its own. Finally we assert B's data is byte-for-byte unchanged and that
+ * the explicit superadmin bypass is audited.
  *
  * The model list comes from the Prisma DMMF, NOT from a hand-written list: adding a table without classifying
  * it and without a factory below fails this suite (and therefore CI).
@@ -17,7 +19,8 @@ import { join } from 'node:path';
 import request from 'supertest';
 import { AuthService } from '../src/auth/auth.service';
 import { PrismaService } from '../src/prisma/prisma.service';
-import { SCOPES, TenantIsolationError } from '../src/prisma/tenant-scope';
+import { roleFacts, tableFacts } from '../src/prisma/rls-check';
+import { pinScope, SCOPES, TenantIsolationError } from '../src/prisma/tenant-scope';
 import { createApp, deleteTenants, uniq } from './helpers';
 
 type Row = Record<string, any>;
@@ -462,6 +465,120 @@ describe('GATE: tenant isolation across every model', () => {
       const b = await base.tenant.findUnique({ where: { id: T.B.id } });
       expect(b!.razorpayKeyEnc).toBeNull();
       await base.user.delete({ where: { tenantId_email: { tenantId: T.A.id, email } } });
+    });
+  });
+
+
+  // ------------------------------------------------------------------------------------------------
+  describe('DATABASE LAYER: row-level security holds even when the app layer is bypassed', () => {
+    /** The application role with NO extension and NO scoping at all: this is "the Prisma layer is gone". */
+    let raw: any;
+    const table = (m: string) => modelDef(m).dbName ?? m;
+    const expectRls = (err: any) => {
+      if (!/row-level security/.test(String(err?.message))) throw new Error(`Expected a row-level security rejection, got: ${err?.name} ${err?.code} ${String(err?.message).slice(0, 200)}`);
+    };
+    /** Pin a scope on a fresh transaction exactly as the extension does, then run unscoped work inside it. */
+    const pinned = (tenantId: string | null, platform: boolean, fn: (tx: any) => Promise<any>) =>
+      raw.$transaction(async (tx: any) => { await pinScope(tx, tenantId, platform); return fn(tx); });
+    const ids = (rows: Row[], m: string) => rows.map((r) => r[pkField(m)]).sort();
+
+    beforeAll(async () => { raw = new PrismaClient(); await raw.$connect(); });
+    afterAll(async () => { await raw.$disconnect(); });
+
+    it('the application role cannot sidestep RLS, and every model table has RLS enabled with a policy', async () => {
+      const r = await roleFacts(raw);
+      expect(r).toMatchObject({ superuser: false, bypassRls: false, ownedTables: [] });
+      const t = await tableFacts(base);
+      expect(t.map((x) => x.table).sort()).toEqual(MODELS.map(table).sort());
+      for (const x of t) expect(x).toMatchObject({ rlsEnabled: true, policies: expect.any(Number) });
+      for (const x of t) expect(x.policies).toBeGreaterThan(0);
+    });
+
+    it.each(MODELS)('%s: with nothing pinned (app layer bypassed) the database shows and accepts NOTHING', async (m) => {
+      const D = lc(m);
+      expect(await raw[D].findMany()).toEqual([]);
+      expect(await raw[D].count()).toBe(0);
+      for (const k of ['A', 'B'] as const) for (const r of seeded[k][m]) expect(await raw[D].findUnique({ where: idWhere(m, r) })).toBeNull();
+      expect((await raw[D].updateMany({ data: META[m].touch })).count).toBe(0);
+      expect((await raw[D].deleteMany({})).count).toBe(0);
+      const [{ n }] = await raw.$queryRawUnsafe(`SELECT count(*)::int AS n FROM "${table(m)}"`);
+      expect(n).toBe(0);
+      expect(await raw.$executeRawUnsafe(`DELETE FROM "${table(m)}"`)).toBe(0);
+      // inserting even a perfectly well-formed row of tenant A is refused: no pin, no rows
+      const data = m === 'Tenant' ? { name: 'x', slug: rnd(), subdomain: rnd() } : await dataFor(m, seeded.A, 90, hasField(m, 'tenantId') ? { tenantId: T.A.id } : {});
+      expectRls(await rejection(raw[D].create({ data })));
+    });
+
+    describe.each([['A', 'B'], ['B', 'A']] as const)('pinned as %s, attacking %s with unscoped Prisma and raw SQL', (me, other) => {
+      it.each(MODELS)('%s', async (m) => {
+        const D = lc(m);
+        const meta = META[m];
+        await pinned(T[me].id, false, async (tx) => {
+          // an unscoped query is restricted to MY rows by the database alone
+          expect(ids(await tx[D].findMany(), m)).toEqual(ids(seeded[me][m], m));
+          for (const r of seeded[other][m]) {
+            expect(await tx[D].findUnique({ where: idWhere(m, r) })).toBeNull();
+            expect((await tx[D].updateMany({ where: idWhere(m, r), data: META[m].touch })).count).toBe(0);
+            expect((await tx[D].deleteMany({ where: idWhere(m, r) })).count).toBe(0);
+          }
+          if (hasField(m, 'tenantId')) {
+            expect(await tx[D].findMany({ where: { tenantId: T[other].id } })).toEqual([]);
+            const [{ n }] = await tx.$queryRawUnsafe(`SELECT count(*)::int AS n FROM "${table(m)}" WHERE tenant_id = $1::uuid`, T[other].id);
+            expect(n).toBe(0);
+            expect(await tx.$executeRawUnsafe(`UPDATE "${table(m)}" SET tenant_id = tenant_id WHERE tenant_id = $1::uuid`, T[other].id)).toBe(0);
+            expect(await tx.$executeRawUnsafe(`DELETE FROM "${table(m)}" WHERE tenant_id = $1::uuid`, T[other].id)).toBe(0);
+          }
+          if (m === 'Variant') {
+            const [{ n }] = await tx.$queryRawUnsafe(`SELECT count(*)::int AS n FROM "variants" WHERE product_id = ANY($1::uuid[])`, seeded[other].Product.map((p) => p.id));
+            expect(n).toBe(0);
+          }
+          if (m === 'Tenant') {
+            expect(await tx.$executeRawUnsafe(`UPDATE "tenants" SET name = 'pwned' WHERE id = $1::uuid`, T[other].id)).toBe(0);
+          }
+        });
+        // writing INTO the other tenant is refused by the policy's WITH CHECK (each in its own transaction: an error aborts it)
+        if (m === 'Tenant') {
+          expectRls(await rejection(pinned(T[me].id, false, (tx) => tx.tenant.create({ data: { name: 'x', slug: rnd(), subdomain: rnd() } }))));
+        } else {
+          const foreign = await dataFor(m, seeded[me], 91, hasField(m, 'tenantId') ? { tenantId: T[other].id } : { productId: seeded[other].Product[0].id });
+          expectRls(await rejection(pinned(T[me].id, false, (tx) => tx[D].create({ data: foreign }))));
+          // ...and so is raw SQL (audit_logs is append-only, so its raw attack is an INSERT rather than a move)
+          const rawWrite: [string, ...string[]] =
+            m === 'Variant' ? [`INSERT INTO "variants" (id, product_id, option_name, option_value) VALUES (gen_random_uuid(), $1::uuid, 'Size', 'XL')`, seeded[other].Product[0].id]
+            : m === 'AuditLog' ? [`INSERT INTO "audit_logs" (id, action, tenant_id) VALUES (gen_random_uuid(), 'gate.rls', $1::uuid)`, T[other].id]
+            : [`UPDATE "${table(m)}" SET tenant_id = $1::uuid WHERE tenant_id = $2::uuid`, T[other].id, T[me].id];
+          expectRls(await rejection(pinned(T[me].id, false, (tx) => tx.$executeRawUnsafe(...rawWrite))));
+        }
+        if (hasField(m, 'tenantId') && !SINGLE_ROW.has(m) && !meta.updateBlocked) {
+          // moving my own row to the other tenant: the new row fails WITH CHECK (audit_logs: the append-only trigger fires first)
+          expectRls(await rejection(pinned(T[me].id, false, (tx) => tx[D].updateMany({ where: idWhere(m, seeded[me][m][0]), data: { tenantId: T[other].id } }))));
+        }
+      });
+    });
+
+    it('platform pin: only tenant_id IS NULL rows of nullable tables; cannot write into a tenant', async () => {
+      for (const m of MODELS) {
+        const rows: Row[] = await pinned(null, true, (tx) => tx[lc(m)].findMany());
+        const nullable = SCOPES[m].kind === 'direct' && (SCOPES[m] as any).nullable;
+        if (nullable) for (const r of rows) expect(r.tenantId).toBeNull();
+        else expect(rows).toEqual([]);
+      }
+      expectRls(await rejection(pinned(null, true, (tx) => tx.user.create({ data: { email: `x-${rnd()}@gate-platform.test`, passwordHash: 'x', role: 'staff', tenantId: T.A.id } }))));
+      expectRls(await rejection(pinned(null, true, async (tx) => tx.product.create({ data: await dataFor('Product', seeded.A, 92, { tenantId: T.A.id }) }))));
+    });
+
+    it('the pin is transaction-local: nothing leaks to the next use of the pooled connection', async () => {
+      for (let i = 0; i < 5; i++) {
+        expect((await pinned(T.A.id, false, (tx) => tx.product.findMany())).length).toBe(count('A', 'Product'));
+        expect(await raw.product.findMany()).toEqual([]);
+        expect(await raw.user.findMany()).toEqual([]);
+      }
+    });
+
+    it('the owner connection (prisma.base) is exempt, which is what the audited bypass relies on', async () => {
+      const r = await roleFacts(base);
+      expect(r.superuser || r.bypassRls || r.ownedTables.length === MODELS.length).toBe(true);
+      expect((await base.product.findMany({ where: { tenantId: { in: [T.A.id, T.B.id] } } })).length).toBe(count('A', 'Product') + count('B', 'Product'));
     });
   });
 

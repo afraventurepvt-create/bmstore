@@ -9,6 +9,7 @@
     "prisma:generate": "prisma generate",
     "migrate:dev": "prisma migrate dev",
     "migrate:deploy": "prisma migrate deploy",
+    "db:app-role": "ts-node scripts/db-app-role.ts",
     "seed:superadmin": "ts-node scripts/seed-superadmin.ts",
     "typecheck": "tsc --noEmit",
     "test": "jest --runInBand",
