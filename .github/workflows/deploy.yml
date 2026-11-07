@@ -1,0 +1,100 @@
+# Manual production deploy over SSH.
+#
+# Trigger: GitHub -> Actions -> "Deploy to production" -> Run workflow. Nothing runs automatically.
+# The runner only SSHes to the VPS and executes deploy/deploy.sh there; building happens on the server.
+#
+# Required repository secrets (Settings -> Secrets and variables -> Actions):
+#   DEPLOY_HOST         server IP or hostname (e.g. 203.0.113.10)
+#   DEPLOY_USER         deploy
+#   DEPLOY_SSH_KEY      PRIVATE key (ed25519) whose public half is in ~deploy/.ssh/authorized_keys,
+#                       ideally restricted with command="/opt/bmstore/deploy/ci-entry.sh" (see SERVER_HARDENING.md)
+#   DEPLOY_KNOWN_HOSTS  output of:  ssh-keyscan -p <port> <host>   (pins the server's host key)
+# Optional:
+#   DEPLOY_PORT         SSH port (default 22)
+#   DEPLOY_APP_DIR      checkout path on the server (default /opt/bmstore)
+# Use a GitHub "production" environment with required reviewers if you want an approval step.
+name: Deploy to production
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Branch, tag or commit to deploy"
+        required: true
+        default: "main"
+        type: string
+      skip_backup:
+        description: "Skip the pre-deploy database dump (not recommended)"
+        required: false
+        default: false
+        type: boolean
+      dry_run:
+        description: "Only print what would happen on the server"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: SSH deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    environment:
+      name: production
+      url: https://console.${{ vars.ROOT_DOMAIN || 'store.bmtechx.in' }}
+    steps:
+      - name: Check secrets are present
+        env:
+          H: ${{ secrets.DEPLOY_HOST }}
+          U: ${{ secrets.DEPLOY_USER }}
+          K: ${{ secrets.DEPLOY_SSH_KEY }}
+          KH: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          missing=""
+          [ -n "$H" ] || missing="$missing DEPLOY_HOST"
+          [ -n "$U" ] || missing="$missing DEPLOY_USER"
+          [ -n "$K" ] || missing="$missing DEPLOY_SSH_KEY"
+          [ -n "$KH" ] || missing="$missing DEPLOY_KNOWN_HOSTS"
+          if [ -n "$missing" ]; then echo "::error::Missing secrets:$missing (see docs/runbooks/DEPLOY.md)"; exit 1; fi
+
+      - name: Install SSH key and pinned host key
+        env:
+          SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 644 ~/.ssh/known_hosts
+
+      - name: Run deploy on the server
+        env:
+          HOST: ${{ secrets.DEPLOY_HOST }}
+          USER: ${{ secrets.DEPLOY_USER }}
+          PORT: ${{ secrets.DEPLOY_PORT || '22' }}
+          APP_DIR: ${{ secrets.DEPLOY_APP_DIR || '/opt/bmstore' }}
+          REF: ${{ inputs.ref }}
+          SKIP_BACKUP: ${{ inputs.skip_backup }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          flags=""
+          [ "$SKIP_BACKUP" = "true" ] && flags="$flags --no-backup"
+          [ "$DRY_RUN" = "true" ] && flags="$flags --dry-run"
+          # Works with a plain key (runs the script) and with a forced-command key
+          # (deploy/ci-entry.sh strips the "cd … &&" prefix and only allows deploy.sh with safe flags).
+          ssh -i ~/.ssh/deploy_key -p "$PORT" \
+              -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts \
+              -o ConnectTimeout=20 -o ServerAliveInterval=30 -o BatchMode=yes \
+              "$USER@$HOST" "cd $APP_DIR && ./deploy/deploy.sh $REF $flags"
+
+      - name: Clean up key
+        if: always()
+        run: rm -f ~/.ssh/deploy_key

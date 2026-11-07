@@ -1,0 +1,178 @@
+# =============================================================================
+# BMStore edge — Caddy 2.10 built with github.com/mholt/caddy-ratelimit
+# (deploy/docker/caddy.Dockerfile). Mounted read-only at /etc/caddy/Caddyfile.
+#
+# Hosts:
+#   api.<ROOT_DOMAIN>       -> api            (platform host: superadmin + platform routes)
+#   admin.<ROOT_DOMAIN>     -> admin app      (store-owner dashboard)
+#   console.<ROOT_DOMAIN>   -> console app    (platform superadmin console)
+#   media.<ROOT_DOMAIN>     -> MinIO S3 API   (read-only from the internet)
+#   minio.<ROOT_DOMAIN>     -> MinIO console
+#   <ROOT_DOMAIN>, www.     -> redirect to console
+#   everything else         -> tenant store (on-demand TLS, approved by tls-ask only for real tenants)
+#                              /api/*  -> api (prefix stripped, Host kept => tenant context)
+#                              /*      -> storefront
+# Environment placeholders (dollar-brace syntax) are substituted when Caddy loads the file (compose "caddy" service).
+# =============================================================================
+{
+	email {$ACME_EMAIL}
+
+	# On-demand TLS: Caddy asks this URL before obtaining a certificate for an unknown host.
+	# tls-ask returns 200 only for existing tenants (infra/tls-ask/server.js).
+	on_demand_tls {
+		ask http://tls-ask:8080/ask
+	}
+
+	# rate_limit is a plugin directive and needs a place in the directive order.
+	# After "header" so 429 responses still carry the security headers.
+	order rate_limit after header
+
+	servers {
+		# Only Caddy terminates TLS here; no upstream proxy in front of it.
+		protocols h1 h2 h3
+	}
+}
+
+# -----------------------------------------------------------------------------
+# Snippets
+# -----------------------------------------------------------------------------
+(access_log) {
+	log {
+		output stdout
+		format json
+	}
+}
+
+(security_headers) {
+	header {
+		# 1 year HSTS. No includeSubDomains: tenant custom domains may have unrelated sub-domains.
+		Strict-Transport-Security "max-age=31536000"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "SAMEORIGIN"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=(), usb=(), interest-cohort=()"
+		Cross-Origin-Opener-Policy "same-origin-allow-popups"
+		-Server
+		-X-Powered-By
+		defer
+	}
+}
+
+# Request size + per-IP rate limits. Tune "events" once real traffic is known.
+(limits) {
+	request_body {
+		max_size 25MB
+	}
+	rate_limit {
+		# Login / refresh endpoints: brute-force protection.
+		zone auth_per_ip {
+			match {
+				path /api/auth/* /auth/*
+			}
+			key {client_ip}
+			events 20
+			window 1m
+		}
+		# Everything else, per client IP.
+		zone per_ip {
+			key {client_ip}
+			events 600
+			window 1m
+		}
+	}
+}
+
+# API reachable on a platform host: force the Host the API treats as "platform".
+(platform_api) {
+	handle /api/* {
+		uri strip_prefix /api
+		reverse_proxy api:3000 {
+			header_up Host api.{$ROOT_DOMAIN}
+			header_up X-Forwarded-Host api.{$ROOT_DOMAIN}
+		}
+	}
+}
+
+# -----------------------------------------------------------------------------
+# Platform hosts (certificates managed normally, obtained at start-up)
+# -----------------------------------------------------------------------------
+api.{$ROOT_DOMAIN} {
+	import access_log
+	import security_headers
+	import limits
+	encode zstd gzip
+	reverse_proxy api:3000
+}
+
+admin.{$ROOT_DOMAIN} {
+	import access_log
+	import security_headers
+	import limits
+	encode zstd gzip
+	import platform_api
+	handle {
+		reverse_proxy {$ADMIN_UPSTREAM}
+	}
+}
+
+console.{$ROOT_DOMAIN} {
+	import access_log
+	import security_headers
+	import limits
+	encode zstd gzip
+	import platform_api
+	handle {
+		reverse_proxy {$CONSOLE_UPSTREAM}
+	}
+}
+
+{$ROOT_DOMAIN}, www.{$ROOT_DOMAIN} {
+	import access_log
+	import security_headers
+	redir https://console.{$ROOT_DOMAIN}{uri} permanent
+}
+
+# MinIO (compose profile "minio"). With external S3/R2 these simply answer 502 and can be removed.
+media.{$ROOT_DOMAIN} {
+	import access_log
+	import security_headers
+	import limits
+	@write not method GET HEAD OPTIONS
+	respond @write 405
+	header Cache-Control "public, max-age=31536000, immutable"
+	reverse_proxy minio:9000
+}
+
+minio.{$ROOT_DOMAIN} {
+	import access_log
+	import security_headers
+	import limits
+	reverse_proxy minio:9001
+}
+
+# -----------------------------------------------------------------------------
+# Tenant stores: <slug>.<ROOT_DOMAIN> and customer-owned domains (CNAME -> ROOT_DOMAIN).
+# Certificates are issued on first visit, only if tls-ask approves the host.
+# -----------------------------------------------------------------------------
+https:// {
+	tls {
+		on_demand
+	}
+	import access_log
+	import security_headers
+	import limits
+	encode zstd gzip
+
+	handle /api/* {
+		uri strip_prefix /api
+		reverse_proxy api:3000
+	}
+	handle {
+		reverse_proxy {$STOREFRONT_UPSTREAM}
+	}
+}
+
+# Plain HTTP -> HTTPS for every host (ACME HTTP-01 challenges are answered before this).
+http:// {
+	redir https://{host}{uri} permanent
+}

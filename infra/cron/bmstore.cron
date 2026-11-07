@@ -1,0 +1,24 @@
+# /etc/cron.d/bmstore — installed by deploy/install-cron.sh (placeholders are replaced).
+# All times UTC. Logs: /var/log/bmstore/*.log (rotated by /etc/logrotate.d/bmstore).
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=""
+BMSTORE_ENV_FILE=/etc/bmstore/production.env
+
+# --- backups (run inside the "backup" container) ---------------------------------------
+# nightly dump 02:15
+15 2 * * *   __USER__  cd __APP_DIR__ && ./deploy/compose.sh run --rm -T backup nightly      >> /var/log/bmstore/backup.log 2>&1
+# weekly full (dump + globals + media copy) Sunday 03:30
+30 3 * * 0   __USER__  cd __APP_DIR__ && ./deploy/compose.sh run --rm -T backup weekly       >> /var/log/bmstore/backup.log 2>&1
+# monthly automated restore test, 1st of the month 04:30 (reports PASS/FAIL via notify.sh)
+30 4 1 * *   __USER__  cd __APP_DIR__ && ./deploy/compose.sh run --rm -T backup restore-test >> /var/log/bmstore/restore-test.log 2>&1
+
+# --- monitoring (host side) --------------------------------------------------------------
+*/5 * * * *  __USER__  cd __APP_DIR__ && ./infra/monitoring/uptime-check.sh  >> /var/log/bmstore/uptime.log 2>&1
+*/15 * * * * __USER__  cd __APP_DIR__ && ./infra/monitoring/failed-jobs.sh   >> /var/log/bmstore/failed-jobs.log 2>&1
+7 */6 * * *  __USER__  cd __APP_DIR__ && ./infra/monitoring/disk-usage.sh    >> /var/log/bmstore/disk.log 2>&1
+20 6 * * *   __USER__  cd __APP_DIR__ && ./infra/monitoring/ssl-expiry.sh    >> /var/log/bmstore/ssl.log 2>&1
+
+# --- housekeeping ------------------------------------------------------------------------
+# remove dangling images/build cache older than a week (keeps tagged bmstore/* images for rollback)
+45 5 * * 1   __USER__  docker image prune -f --filter "until=168h" >> /var/log/bmstore/housekeeping.log 2>&1 && docker builder prune -f --filter "until=168h" >> /var/log/bmstore/housekeeping.log 2>&1

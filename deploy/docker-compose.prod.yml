@@ -1,0 +1,395 @@
+# BMStore – production stack for ONE VPS (Ubuntu, 4–8 GB).
+#
+# Always drive this file through ./deploy/compose.sh (it sets --env-file /etc/bmstore/production.env,
+# the project directory and the current image tag), e.g.:
+#   ./deploy/compose.sh ps
+#   ./deploy/compose.sh logs -f api
+#   ./deploy/compose.sh run --rm migrate
+#
+# Profiles (COMPOSE_PROFILES in the env file):
+#   minio  bundled object storage on this VPS (omit when using R2/S3)
+#   web    storefront / admin / console frontends (enable once apps/<name> exist)
+#   tools  one-off jobs (migrate, backup) – `compose run` enables them automatically
+#
+# Networks: "edge" is reachable from Caddy; "data" holds Postgres/Redis. Only Caddy publishes ports.
+name: bmstore
+
+x-logging: &default-logging
+  driver: json-file
+  options:
+    max-size: "20m"
+    max-file: "5"
+
+x-api-env: &api-env
+  NODE_ENV: production
+  PORT: "3000"
+  ROOT_DOMAIN: ${ROOT_DOMAIN}
+  TRUST_PROXY: ${TRUST_PROXY:-1}
+  # The app connects as the NON-OWNER role. Migrations use the owner role (see "migrate").
+  DATABASE_URL: postgresql://${APP_DB_USER:-bmstore_app}:${APP_DB_PASSWORD}@postgres:5432/${POSTGRES_DB:-bmstore}?schema=public
+  REDIS_URL: redis://:${REDIS_PASSWORD}@redis:6379/0
+  TENANT_CACHE_TTL_SECONDS: ${TENANT_CACHE_TTL_SECONDS:-300}
+  JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET}
+  JWT_ACCESS_TTL: ${JWT_ACCESS_TTL:-15m}
+  REFRESH_TTL_DAYS: ${REFRESH_TTL_DAYS:-30}
+  ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+  # Media (consumed by the app from Phase 2 on)
+  MEDIA_BACKEND: ${MEDIA_BACKEND:-minio}
+  S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
+  S3_REGION: ${S3_REGION:-auto}
+  S3_BUCKET: ${S3_BUCKET:-bmstore-media}
+  S3_ACCESS_KEY: ${S3_ACCESS_KEY}
+  S3_SECRET_KEY: ${S3_SECRET_KEY}
+  S3_PUBLIC_URL: ${S3_PUBLIC_URL}
+
+services:
+  # ---------------------------------------------------------------- edge ----
+  caddy:
+    build:
+      context: .
+      dockerfile: deploy/docker/caddy.Dockerfile
+      args:
+        CADDY_DNS_PLUGIN: ${CADDY_DNS_PLUGIN:-}
+    image: bmstore/caddy:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      ROOT_DOMAIN: ${ROOT_DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+      DNS_API_TOKEN: ${DNS_API_TOKEN:-}
+      STOREFRONT_UPSTREAM: ${STOREFRONT_UPSTREAM:-storefront:3000}
+      ADMIN_UPSTREAM: ${ADMIN_UPSTREAM:-admin:3000}
+      CONSOLE_UPSTREAM: ${CONSOLE_UPSTREAM:-console:3000}
+    volumes:
+      - ./infra/caddy/${CADDYFILE:-Caddyfile}:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      tls-ask:
+        condition: service_started
+      api:
+        condition: service_healthy
+    networks: [edge]
+    logging: *default-logging
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:2019/metrics"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # Answers Caddy's on-demand TLS "ask": 200 only for hosts that exist as tenants.
+  tls-ask:
+    build:
+      context: ./infra/tls-ask
+    image: bmstore/tls-ask:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment:
+      ROOT_DOMAIN: ${ROOT_DOMAIN}
+      API_UPSTREAM: http://api:3000
+      PORT: "8080"
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [edge]
+    logging: *default-logging
+    read_only: true
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ----------------------------------------------------------------- app ----
+  api:
+    build:
+      context: .
+      dockerfile: deploy/docker/api.Dockerfile
+      target: runtime
+    image: bmstore/api:${IMAGE_TAG:-latest}
+    restart: unless-stopped
+    environment: *api-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [edge, data]
+    logging: *default-logging
+    read_only: true
+    tmpfs: ["/tmp"]
+    security_opt: ["no-new-privileges:true"]
+    deploy:
+      resources:
+        limits:
+          memory: 1g
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  # One-off: `./deploy/compose.sh run --rm migrate`   (prisma migrate deploy as the OWNER role)
+  # Also used for seeding:  ./deploy/compose.sh run --rm -e SUPERADMIN_EMAIL=.. -e SUPERADMIN_PASSWORD=.. migrate npm run seed:superadmin -w apps/api
+  migrate:
+    build:
+      context: .
+      dockerfile: deploy/docker/api.Dockerfile
+      target: migrate
+    image: bmstore/api-tools:${IMAGE_TAG:-latest}
+    profiles: [tools]
+    environment:
+      <<: *api-env
+      DATABASE_URL: postgresql://${POSTGRES_USER:-bmstore}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-bmstore}?schema=public
+    command: ["npx", "prisma", "migrate", "deploy"]
+    working_dir: /app/apps/api
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks: [data]
+    logging: *default-logging
+
+  # Frontends (profile "web"). Each expects apps/<name> with `npm run build` and `npm start` on $PORT.
+  storefront:
+    build:
+      context: .
+      dockerfile: deploy/docker/web.Dockerfile
+      args: { APP: storefront }
+    image: bmstore/storefront:${IMAGE_TAG:-latest}
+    profiles: [web]
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      ROOT_DOMAIN: ${ROOT_DOMAIN}
+      API_INTERNAL_URL: http://api:3000
+      NEXT_PUBLIC_API_BASE: /api
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [edge]
+    logging: *default-logging
+    security_opt: ["no-new-privileges:true"]
+
+  admin:
+    build:
+      context: .
+      dockerfile: deploy/docker/web.Dockerfile
+      args: { APP: admin }
+    image: bmstore/admin:${IMAGE_TAG:-latest}
+    profiles: [web]
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      ROOT_DOMAIN: ${ROOT_DOMAIN}
+      API_INTERNAL_URL: http://api:3000
+      NEXT_PUBLIC_API_URL: https://api.${ROOT_DOMAIN}
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [edge]
+    logging: *default-logging
+    security_opt: ["no-new-privileges:true"]
+
+  console:
+    build:
+      context: .
+      dockerfile: deploy/docker/web.Dockerfile
+      args: { APP: console }
+    image: bmstore/console:${IMAGE_TAG:-latest}
+    profiles: [web]
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      ROOT_DOMAIN: ${ROOT_DOMAIN}
+      API_INTERNAL_URL: http://api:3000
+      NEXT_PUBLIC_API_URL: https://api.${ROOT_DOMAIN}
+    depends_on:
+      api:
+        condition: service_healthy
+    networks: [edge]
+    logging: *default-logging
+    security_opt: ["no-new-privileges:true"]
+
+  # ---------------------------------------------------------------- data ----
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-bmstore}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-bmstore}
+      POSTGRES_INITDB_ARGS: "--data-checksums"
+      APP_DB_USER: ${APP_DB_USER:-bmstore_app}
+      APP_DB_PASSWORD: ${APP_DB_PASSWORD}
+    # Tuned for a 4–8 GB VPS shared with the app. Adjust shared_buffers/effective_cache_size if RAM differs.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=1536MB
+      - -c
+      - work_mem=8MB
+      - -c
+      - maintenance_work_mem=128MB
+      - -c
+      - max_connections=100
+      - -c
+      - wal_compression=on
+      - -c
+      - log_min_duration_statement=1000
+      - -c
+      - log_checkpoints=on
+      - -c
+      - password_encryption=scram-sha-256
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./infra/postgres/initdb:/docker-entrypoint-initdb.d:ro
+      - ./infra/postgres/app-role.sql:/opt/bmstore/app-role.sql:ro
+    shm_size: 256m
+    networks: [data]
+    logging: *default-logging
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-bmstore} -d ${POSTGRES_DB:-bmstore}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command:
+      - redis-server
+      - /usr/local/etc/redis/redis.conf
+      - --requirepass
+      - ${REDIS_PASSWORD}
+    volumes:
+      - ./infra/redis/redis.conf:/usr/local/etc/redis/redis.conf:ro
+      - redisdata:/data
+    networks: [data]
+    logging: *default-logging
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$$REDIS_PASSWORD\" --no-auth-warning ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD}
+
+  # ------------------------------------------------------- object storage ----
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    profiles: [minio]
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BROWSER_REDIRECT_URL: https://minio.${ROOT_DOMAIN}
+    volumes:
+      - miniodata:/data
+    networks: [edge, data]
+    logging: *default-logging
+    security_opt: ["no-new-privileges:true"]
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Creates the media bucket with anonymous read (download) once; safe to re-run.
+  minio-init:
+    image: minio/mc:RELEASE.2025-08-13T08-35-41Z
+    profiles: [minio]
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      S3_BUCKET: ${S3_BUCKET:-bmstore-media}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - >
+        mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD" &&
+        mc mb --ignore-existing "local/$$S3_BUCKET" &&
+        mc anonymous set download "local/$$S3_BUCKET" &&
+        echo "bucket $$S3_BUCKET ready"
+    networks: [data]
+    logging: *default-logging
+
+  # ------------------------------------------------------------- backups ----
+  # `./deploy/compose.sh run --rm backup nightly|weekly|predeploy|restore-test|restore <file>`
+  backup:
+    build:
+      context: .
+      dockerfile: deploy/docker/backup.Dockerfile
+    image: bmstore/backup:${IMAGE_TAG:-latest}
+    profiles: [tools]
+    restart: "no"
+    environment:
+      PGHOST: postgres
+      PGPORT: "5432"
+      PGUSER: ${POSTGRES_USER:-bmstore}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB:-bmstore}
+      APP_DB_USER: ${APP_DB_USER:-bmstore_app}
+      BACKUP_S3_PROVIDER: ${BACKUP_S3_PROVIDER:-Other}
+      BACKUP_S3_ENDPOINT: ${BACKUP_S3_ENDPOINT:-}
+      BACKUP_S3_REGION: ${BACKUP_S3_REGION:-auto}
+      BACKUP_S3_BUCKET: ${BACKUP_S3_BUCKET:-}
+      BACKUP_S3_ACCESS_KEY: ${BACKUP_S3_ACCESS_KEY:-}
+      BACKUP_S3_SECRET_KEY: ${BACKUP_S3_SECRET_KEY:-}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-30}
+      BACKUP_AGE_RECIPIENT: ${BACKUP_AGE_RECIPIENT:-}
+      BACKUP_INCLUDE_MEDIA: ${BACKUP_INCLUDE_MEDIA:-0}
+      MEDIA_BACKEND: ${MEDIA_BACKEND:-minio}
+      S3_ENDPOINT: ${S3_ENDPOINT:-http://minio:9000}
+      S3_REGION: ${S3_REGION:-auto}
+      S3_BUCKET: ${S3_BUCKET:-bmstore-media}
+      S3_ACCESS_KEY: ${S3_ACCESS_KEY:-}
+      S3_SECRET_KEY: ${S3_SECRET_KEY:-}
+      NOTIFY_CHANNELS: ${NOTIFY_CHANNELS:-stdout}
+      NOTIFY_WEBHOOK_URL: ${NOTIFY_WEBHOOK_URL:-}
+      WHATSAPP_PHONE_NUMBER_ID: ${WHATSAPP_PHONE_NUMBER_ID:-}
+      WHATSAPP_ACCESS_TOKEN: ${WHATSAPP_ACCESS_TOKEN:-}
+      WHATSAPP_OWNER_NUMBER: ${WHATSAPP_OWNER_NUMBER:-}
+      BACKUP_LOCAL_DIR: /backups
+      BMSTORE_STATE_DIR: /state
+    volumes:
+      - ./infra/backup:/opt/bmstore/backup:ro
+      - ./infra/monitoring:/opt/bmstore/monitoring:ro
+      - backups:/backups
+      # host dir so the monitoring cron jobs (deploy user) can read backup.*.last / restore-test.last
+      - ${BMSTORE_STATE_DIR:-/var/lib/bmstore}:/state
+    entrypoint: ["/opt/bmstore/backup/entrypoint.sh"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks: [data]
+    logging: *default-logging
+
+networks:
+  edge:
+  data:
+
+volumes:
+  pgdata:
+  redisdata:
+  caddy_data:
+  caddy_config:
+  miniodata:
+  backups:
