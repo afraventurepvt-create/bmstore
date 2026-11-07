@@ -92,17 +92,18 @@ model Tenant {
   createdAt         DateTime     @default(now()) @map("created_at")
   expiresAt         DateTime?    @map("expires_at")
 
-  themeConfig   ThemeConfig?
-  settings      Settings?
-  products      Product[]
-  variants      Variant[]
-  categories    Category[]
-  orders        Order[]
-  customers     Customer[]
-  coupons       Coupon[]
-  pages         Page[]
-  users         User[]
-  refreshTokens RefreshToken[]
+  themeConfig         ThemeConfig?
+  settings            Settings?
+  products            Product[]
+  variants            Variant[]
+  categories          Category[]
+  orders              Order[]
+  customers           Customer[]
+  coupons             Coupon[]
+  pages               Page[]
+  users               User[]
+  refreshTokens       RefreshToken[]
+  passwordResetTokens PasswordResetToken[]
 
   @@index([status, expiresAt])
   @@map("tenants")
@@ -286,18 +287,23 @@ model Settings {
 
 // tenant_id is NULL only for superadmin (enforced by CHECK in migration 0002).
 model User {
-  id           String   @id @default(uuid()) @db.Uuid
-  tenantId     String?  @map("tenant_id") @db.Uuid
-  email        String
-  phone        String?
-  passwordHash String   @map("password_hash")
-  role         UserRole
-  isActive     Boolean  @default(true) @map("is_active")
-  createdAt    DateTime @default(now()) @map("created_at")
+  id                  String    @id @default(uuid()) @db.Uuid
+  tenantId            String?   @map("tenant_id") @db.Uuid
+  email               String
+  phone               String?
+  passwordHash        String    @map("password_hash")
+  role                UserRole
+  isActive            Boolean   @default(true) @map("is_active")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  // Login protection (src/auth): consecutive failures and the lock they produce. Reset on success / password reset.
+  failedLoginAttempts Int       @default(0) @map("failed_login_attempts")
+  lockedUntil         DateTime? @map("locked_until")
 
-  tenant                Tenant?        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  refreshTokens         RefreshToken[] @relation("RefreshTokenUser")
-  refreshTokensInTenant RefreshToken[] @relation("RefreshTokenUserTenant")
+  tenant                      Tenant?              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  refreshTokens               RefreshToken[]       @relation("RefreshTokenUser")
+  refreshTokensInTenant       RefreshToken[]       @relation("RefreshTokenUserTenant")
+  passwordResetTokens         PasswordResetToken[] @relation("PasswordResetUser")
+  passwordResetTokensInTenant PasswordResetToken[] @relation("PasswordResetUserTenant")
 
   @@unique([tenantId, id])
   @@unique([tenantId, email])
@@ -324,6 +330,25 @@ model RefreshToken {
   @@index([tenantId, userId])
   @@index([familyId])
   @@map("refresh_tokens")
+}
+
+// Password reset: only the sha256 of the emailed token is stored; single-use (used_at), 30 minute expiry.
+model PasswordResetToken {
+  id        String    @id @default(uuid()) @db.Uuid
+  userId    String    @map("user_id") @db.Uuid
+  tenantId  String?   @map("tenant_id") @db.Uuid
+  tokenHash String    @unique @map("token_hash")
+  expiresAt DateTime  @map("expires_at")
+  usedAt    DateTime? @map("used_at")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  user         User    @relation("PasswordResetUser", fields: [userId], references: [id], onDelete: Cascade)
+  // Composite FK: a token's tenant must be its user's tenant (not enforced when tenant_id is NULL = superadmin).
+  userInTenant User?   @relation("PasswordResetUserTenant", fields: [tenantId, userId], references: [tenantId, id], onDelete: Cascade, onUpdate: NoAction)
+  tenant       Tenant? @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@index([tenantId, userId])
+  @@map("password_reset_tokens")
 }
 
 // Append-only (DB trigger in migration 0002). No FKs: logs outlive tenants/users.

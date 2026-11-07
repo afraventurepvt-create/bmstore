@@ -6,3 +6,6 @@ process.env.REDIS_URL ??= 'redis://localhost:6379/15';
 process.env.ROOT_DOMAIN ??= 'localhost';
 process.env.JWT_ACCESS_SECRET ??= 'test-jwt-secret-test-jwt-secret-test-jwt-secret';
 process.env.ENCRYPTION_KEY ??= Buffer.alloc(32, 7).toString('base64');
+// Suites log in many times from 127.0.0.1; the dedicated auth-protection suite sets tight limits itself.
+process.env.LOGIN_IP_LIMIT ??= '1000';
+process.env.FORGOT_PER_IP_LIMIT ??= '1000';

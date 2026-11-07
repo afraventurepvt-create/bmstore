@@ -4,6 +4,7 @@ import { SuperadminModule } from './superadmin/superadmin.module';
 import { AuthModule } from './auth/auth.module';
 import { AppConfig } from './config/app-config';
 import { HealthController } from './health/health.controller';
+import { MailModule } from './mail/mail.module';
 import { PrismaService } from './prisma/prisma.service';
 import { RedisService } from './redis/redis.service';
 import { TenancyModule } from './tenancy/tenancy.module';
@@ -15,5 +16,5 @@ import { TenancyModule } from './tenancy/tenancy.module';
 })
 class CoreModule {}
 
-@Module({ imports: [CoreModule, TenancyModule, AuthModule, SuperadminModule, StoreModule], controllers: [HealthController] })
+@Module({ imports: [CoreModule, MailModule, TenancyModule, AuthModule, SuperadminModule, StoreModule], controllers: [HealthController] })
 export class AppModule {}

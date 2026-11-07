@@ -35,6 +35,15 @@ npm run test:gate        # just the tenant-isolation gate
 
 Feature code uses `prisma.db` (tenant-scoped, fails closed). `prisma.base` is unscoped and allowlisted by a test.
 
+## Auth endpoints
+
+| Route | Notes |
+|---|---|
+| `POST /auth/login` | per-IP window (`LOGIN_IP_LIMIT`/min, Redis) and per-account lockout: 5 consecutive failures lock the account for 1 min, doubling per further failure up to 1 h (Postgres, survives Redis). 429 + `Retry-After`. Unknown emails behave identically. |
+| `POST /auth/refresh`, `POST /auth/logout` | rotating refresh tokens, family revocation on reuse |
+| `POST /auth/forgot-password` | always 202; existing active accounts get a mail (stub transport: `MailerService.outbox`) with a single-use link, 30 min expiry, hash-only storage; previous tokens voided |
+| `POST /auth/reset-password` | single-use (atomic), bound to the Host it was issued on, clears lockout, revokes all sessions |
+
 ## Two database roles
 
 | Env var | Role | Used for |

@@ -1,5 +1,6 @@
 import { ArgumentsHost, Catch, HttpException, Logger } from '@nestjs/common';
 import { BaseExceptionFilter } from '@nestjs/core';
+import { TooManyRequestsException } from './errors';
 import { RequestContext } from './request-context';
 
 /**
@@ -12,6 +13,9 @@ export class SafeExceptionFilter extends BaseExceptionFilter {
   private readonly log = new Logger('Exception');
 
   override catch(exception: unknown, host: ArgumentsHost) {
+    if (exception instanceof TooManyRequestsException) {
+      host.switchToHttp().getResponse().setHeader('Retry-After', String(exception.retryAfterSeconds));
+    }
     if (exception instanceof HttpException) return super.catch(exception, host);
     const e = exception as { name?: string; code?: string };
     this.log.error(`unhandled ${e?.name ?? 'error'}${e?.code ? ` (${e.code})` : ''} requestId=${RequestContext.get()?.requestId ?? '-'}`);

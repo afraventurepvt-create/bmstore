@@ -59,12 +59,13 @@ const factories: Record<string, (db: any, s: Seed, i: number, over?: Row) => Pro
   Page: (db, _s, i, o) => db.page.create({ data: { slug: `pg-${i}-${rnd()}`, title: `Page ${i}`, content: 'hello', isPolicy: i === 0, ...o } }),
   User: (db, _s, i, o) => db.user.create({ data: { email: `u${i}-${rnd()}@gate.test`, passwordHash: 'not-a-real-hash', role: 'staff', ...o } }),
   RefreshToken: (db, s, i, o) => db.refreshToken.create({ data: { userId: s.User[0].id, familyId: randomUUID(), tokenHash: `h-${rnd()}-${i}`, expiresAt: new Date(Date.now() + 86_400_000), ...o } }),
+  PasswordResetToken: (db, s, i, o) => db.passwordResetToken.create({ data: { userId: s.User[0].id, tokenHash: `r-${rnd()}-${i}`, expiresAt: new Date(Date.now() + 1_800_000), ...o } }),
   AuditLog: (db, _s, i, o) => db.auditLog.create({ data: { action: `gate.seed.${i}`, meta: { i }, ...o } }),
 };
 /** Run a factory against a recorder instead of the DB to obtain the exact create-data it would send. */
 const recorder: any = new Proxy({}, { get: () => ({ create: ({ data }: Row) => ({ __data: data }) }) });
 const dataFor = async (m: string, s: Seed, i: number, over: Row = {}): Promise<Row> => ((await factories[m](recorder, s, i, over)) as any).__data;
-const SEED_ORDER = ['ThemeConfig', 'Settings', 'Category', 'Customer', 'Product', 'Variant', 'Order', 'Coupon', 'Page', 'User', 'RefreshToken', 'AuditLog'];
+const SEED_ORDER = ['ThemeConfig', 'Settings', 'Category', 'Customer', 'Product', 'Variant', 'Order', 'Coupon', 'Page', 'User', 'RefreshToken', 'PasswordResetToken', 'AuditLog'];
 
 // ---- per-model attack metadata ----
 interface Meta {
@@ -101,6 +102,10 @@ const META: Record<string, Meta> = {
   RefreshToken: {
     touch: { revokedAt: new Date() }, compound: (r) => ({ tokenHash: r.tokenHash }),
     crossRef: (db, s, o) => factories.RefreshToken(db, s, 50, { userId: o.User[0].id }),
+  },
+  PasswordResetToken: {
+    touch: { usedAt: new Date() }, compound: (r) => ({ tokenHash: r.tokenHash }),
+    crossRef: (db, s, o) => factories.PasswordResetToken(db, s, 50, { userId: o.User[0].id }),
   },
   AuditLog: { touch: { action: 'touched' }, updateBlocked: true, deleteBlocked: true },
 };
@@ -172,7 +177,7 @@ describe('GATE: tenant isolation across every model', () => {
         expect(factories[m]).toBeDefined();
         for (const k of ['A', 'B'] as const) expect(seeded[k][m].length).toBeGreaterThan(0);
       }
-      expect(MODELS).toHaveLength(13);
+      expect(MODELS).toHaveLength(14);
     });
     it('money is integer paise everywhere: no Float/Decimal field in any model', () => {
       for (const m of DMMF_MODELS) for (const f of m.fields) expect(`${m.name}.${f.name}:${f.type}`).not.toMatch(/:(Float|Decimal)$/);
@@ -418,6 +423,7 @@ describe('GATE: tenant isolation across every model', () => {
       const email = `root-${rnd()}@gate-platform.test`;
       const sa: any = await prisma.asSystem<any>('gate:create-superadmin', () => db.user.create({ data: { email, passwordHash: 'x', role: 'superadmin' } }));
       await prisma.asSystem('gate:create-token', () => db.refreshToken.create({ data: { userId: sa.id, familyId: randomUUID(), tokenHash: `p-${rnd()}`, expiresAt: new Date(Date.now() + 1e6) } }));
+      await prisma.asSystem('gate:create-reset-token', () => db.passwordResetToken.create({ data: { userId: sa.id, tokenHash: `pr-${rnd()}`, expiresAt: new Date(Date.now() + 1e6) } }));
       for (const m of MODELS) {
         const nullable = SCOPES[m].kind === 'direct' && (SCOPES[m] as any).nullable;
         const p = prisma.asPlatform<any>(() => db[lc(m)].findMany());

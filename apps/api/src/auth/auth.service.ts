@@ -1,10 +1,14 @@
-import { Injectable, UnauthorizedException } from '@nestjs/common';
+import { BadRequestException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { Prisma } from '@prisma/client';
 import * as argon2 from 'argon2';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { AppConfig } from '../config/app-config';
+import { TooManyRequestsException } from '../common/errors';
 import { AuthActor, RequestContext, Role } from '../common/request-context';
+import { MailerService } from '../mail/mailer.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { ThrottleService } from './throttle.service';
 
 export interface TokenPair {
   accessToken: string;
@@ -31,6 +35,8 @@ export class AuthService {
     private readonly cfg: AppConfig,
     private readonly jwt: JwtService,
     private readonly prisma: PrismaService,
+    private readonly throttle: ThrottleService,
+    private readonly mailer: MailerService,
   ) {}
 
   hashPassword(plain: string) {
@@ -45,14 +51,53 @@ export class AuthService {
   private scoped<T>(fn: () => Promise<T>): Promise<T> {
     return RequestContext.tenantId() ? fn() : this.prisma.asPlatform(fn);
   }
+  /** Key prefix for per-account counters: the tenant, or the platform. */
+  private scopeKey() {
+    return RequestContext.tenantId() ?? 'platform';
+  }
 
-  async login(emailRaw: string, password: string): Promise<TokenPair> {
+  private audit(action: string, meta: Record<string, unknown>, actorId: string | null = null) {
+    return this.prisma.db.auditLog.create({ data: { actorId, action, meta: meta as Prisma.InputJsonValue } });
+  }
+
+  // ---- login ---------------------------------------------------------------------------------------
+  /**
+   * Limits, in order: per-IP window (429), per-account lock (429, Retry-After), then the password.
+   * Failures increment users.failed_login_attempts; at the threshold the account locks for lockSeconds(n)
+   * (1m, 2m, 4m … capped). Unknown emails get the identical treatment through a Redis mirror, so neither
+   * the status code nor the timing says whether an account exists. Success resets the counter.
+   */
+  async login(emailRaw: string, password: string, ip: string): Promise<TokenPair> {
+    await this.throttle.assertLoginIp(ip);
     const email = emailRaw.trim().toLowerCase();
     return this.scoped(async () => {
-      const user = await this.prisma.db.user.findFirst({ where: { email } });
+      const db = this.prisma.db;
+      const user = await db.user.findFirst({ where: { email } });
+      const now = new Date();
+      if (user?.lockedUntil && user.lockedUntil > now) {
+        throw new TooManyRequestsException(Math.max(1, Math.ceil((user.lockedUntil.getTime() - now.getTime()) / 1000)));
+      }
+      if (!user) await this.throttle.assertGhostUnlocked(this.scopeKey(), email);
+
       this.dummyHash ??= this.hashPassword('dummy-password-for-timing');
       const ok = await argon2.verify(user?.passwordHash ?? (await this.dummyHash), password).catch(() => false);
-      if (!user || !ok || !user.isActive) throw new UnauthorizedException('Invalid credentials');
+
+      if (!user) {
+        await this.throttle.ghostFailure(this.scopeKey(), email);
+        throw new UnauthorizedException('Invalid credentials');
+      }
+      if (!ok || !user.isActive) {
+        if (ok) throw new UnauthorizedException('Invalid credentials'); // inactive: right password, no counter
+        const failures = user.failedLoginAttempts + 1;
+        const lock = this.throttle.lockSeconds(failures);
+        const lockedUntil = lock ? new Date(Date.now() + lock * 1000) : null;
+        await db.user.update({ where: { id: user.id }, data: { failedLoginAttempts: { increment: 1 }, lockedUntil } });
+        if (lockedUntil) await this.audit('auth.account_locked', { userId: user.id, failures, lockSeconds: lock, ip }, user.id);
+        throw new UnauthorizedException('Invalid credentials');
+      }
+      if (user.failedLoginAttempts || user.lockedUntil) {
+        await db.user.update({ where: { id: user.id }, data: { failedLoginAttempts: 0, lockedUntil: null } });
+      }
       return this.issue(user.id, user.role, user.tenantId, randomUUID());
     });
   }
@@ -90,6 +135,58 @@ export class AuthService {
       if (tok) {
         await this.prisma.db.refreshToken.updateMany({ where: { familyId: tok.familyId, revokedAt: null }, data: { revokedAt: new Date() } });
       }
+    });
+  }
+
+  // ---- password reset ------------------------------------------------------------------------------
+  /**
+   * Always answers the same way. For an existing, active account: outstanding tokens are voided, a new 256-bit
+   * token is issued (only its sha256 is stored, 30 minute expiry) and emailed as a link built from the request Host.
+   * Per-email and per-IP windows stop mail floods; above the per-email limit nothing is sent (still a 202).
+   */
+  async forgotPassword(emailRaw: string, host: string, ip: string): Promise<void> {
+    await this.throttle.assertForgotIp(ip);
+    const email = emailRaw.trim().toLowerCase();
+    await this.scoped(async () => {
+      const db = this.prisma.db;
+      const user = await db.user.findFirst({ where: { email, isActive: true } });
+      if (!user) return;
+      if (!(await this.throttle.allowForgotMail(this.scopeKey(), email))) return;
+
+      const raw = randomBytes(32).toString('base64url');
+      const expiresAt = new Date(Date.now() + this.cfg.passwordResetTtlMin * 60_000);
+      await db.passwordResetToken.updateMany({ where: { userId: user.id, usedAt: null }, data: { usedAt: new Date() } });
+      await db.passwordResetToken.create({ data: { userId: user.id, tokenHash: sha256(raw), expiresAt } });
+      await this.audit('auth.password_reset_requested', { userId: user.id, ip }, user.id);
+
+      const link = this.cfg.passwordResetUrlTemplate.replace('{host}', host).replace('{token}', raw);
+      await this.mailer.send({
+        to: user.email,
+        subject: 'Reset your password',
+        text: `Someone (hopefully you) asked to reset the password for ${user.email}.\n\nReset it here within ${this.cfg.passwordResetTtlMin} minutes:\n${link}\n\nIf you did not ask for this, ignore this email; your password has not changed.`,
+      });
+    });
+  }
+
+  /**
+   * Single use: the token row is flipped used_at=null -> now atomically, so two concurrent redemptions yield one
+   * success. Sets the new password, clears any lockout and revokes every refresh-token family of the user.
+   */
+  async resetPassword(rawToken: string, newPassword: string, ip: string): Promise<void> {
+    await this.throttle.assertResetIp(ip);
+    const invalid = () => new BadRequestException('Invalid or expired token');
+    await this.scoped(async () => {
+      const db = this.prisma.db;
+      const tok = await db.passwordResetToken.findUnique({ where: { tokenHash: sha256(rawToken) } }); // scoped to this host's tenant
+      if (!tok || tok.usedAt || tok.expiresAt <= new Date()) throw invalid();
+      const user = await db.user.findUnique({ where: { id: tok.userId } });
+      if (!user || !user.isActive) throw invalid();
+      const passwordHash = await this.hashPassword(newPassword);
+      const flipped = await db.passwordResetToken.updateMany({ where: { id: tok.id, usedAt: null }, data: { usedAt: new Date() } });
+      if (flipped.count !== 1) throw invalid();
+      await db.user.update({ where: { id: user.id }, data: { passwordHash, failedLoginAttempts: 0, lockedUntil: null } });
+      await db.refreshToken.updateMany({ where: { userId: user.id, revokedAt: null }, data: { revokedAt: new Date() } });
+      await this.audit('auth.password_reset', { userId: user.id, ip }, user.id);
     });
   }
 

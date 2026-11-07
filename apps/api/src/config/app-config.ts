@@ -22,6 +22,22 @@ export class AppConfig {
   readonly jwtAccessTtl = process.env.JWT_ACCESS_TTL ?? '15m';
   readonly refreshTtlDays = Number(process.env.REFRESH_TTL_DAYS ?? 30);
   readonly encryptionKey = parseKey(required('ENCRYPTION_KEY'));
+
+  // --- Login protection (src/auth/throttle.service.ts) ---
+  /** Login attempts per client IP per window (Redis). */
+  readonly loginIpLimit = Number(process.env.LOGIN_IP_LIMIT ?? 20);
+  readonly loginIpWindowSec = Number(process.env.LOGIN_IP_WINDOW_SECONDS ?? 60);
+  /** Consecutive failures on one account before it locks; the lock doubles from lockBaseSec up to lockMaxSec. */
+  readonly loginMaxFailures = Number(process.env.LOGIN_MAX_FAILURES ?? 5);
+  readonly lockBaseSec = Number(process.env.LOGIN_LOCK_BASE_SECONDS ?? 60);
+  readonly lockMaxSec = Number(process.env.LOGIN_LOCK_MAX_SECONDS ?? 3600);
+  /** Password reset: token lifetime and the link put in the email ({host} = request Host, {token} = raw token). */
+  readonly passwordResetTtlMin = Number(process.env.PASSWORD_RESET_TTL_MINUTES ?? 30);
+  readonly passwordResetUrlTemplate = process.env.PASSWORD_RESET_URL_TEMPLATE ?? 'https://{host}/reset-password?token={token}';
+  /** Forgot-password requests per email per window (silently dropped above it) and per IP. */
+  readonly forgotPerEmailLimit = Number(process.env.FORGOT_PER_EMAIL_LIMIT ?? 3);
+  readonly forgotPerIpLimit = Number(process.env.FORGOT_PER_IP_LIMIT ?? 10);
+  readonly forgotWindowSec = Number(process.env.FORGOT_WINDOW_SECONDS ?? 900);
   /** Subdomains that are platform hosts, never tenants. */
   readonly reservedSubdomains = new Set(['www', 'admin', 'api', 'app', 'static', 'cdn', 'mail']);
 
