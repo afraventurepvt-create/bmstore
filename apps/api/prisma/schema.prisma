@@ -99,6 +99,9 @@ model Tenant {
   whatsappNumber    String?      @map("whatsapp_number")
   createdAt         DateTime     @default(now()) @map("created_at")
   expiresAt         DateTime?    @map("expires_at")
+  /// Fair-use limits (superadmin-editable). Counted in tenant_usage by triggers.
+  maxProducts       Int          @default(2000) @map("max_products")
+  maxMediaMb        Int          @default(10240) @map("max_media_mb")
 
   themeConfig         ThemeConfig?
   settings            Settings?
@@ -113,6 +116,7 @@ model Tenant {
   refreshTokens       RefreshToken[]
   passwordResetTokens PasswordResetToken[]
   media               Media[]
+  usage               TenantUsage?
 
   @@index([status, expiresAt])
   @@map("tenants")
@@ -374,6 +378,19 @@ model Media {
   @@index([tenantId, filename])
   @@index([status, createdAt])
   @@map("media")
+}
+
+// Live counters maintained by database triggers (migration *_fair_use_limits): products rows and stored media bytes.
+// Read by GET /store/usage and by the fair-use checks; never written by application code.
+model TenantUsage {
+  tenantId     String   @id @map("tenant_id") @db.Uuid
+  productCount Int      @default(0) @map("product_count")
+  mediaBytes   BigInt   @default(0) @map("media_bytes")
+  updatedAt    DateTime @default(now()) @updatedAt @map("updated_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@map("tenant_usage")
 }
 
 // Password reset: only the sha256 of the emailed token is stored; single-use (used_at), 30 minute expiry.

@@ -4,6 +4,7 @@ import { RequestContext } from '../common/request-context';
 import { slugify } from '../common/slug';
 import { PrismaService } from '../prisma/prisma.service';
 import { ProductsService } from '../catalog/products.service';
+import { TenantLimitsService } from '../limits/limits';
 import { PLAN_LIMITS } from '../tenancy/plans';
 import { detectFormat, parseImportFile, RawRow } from './import-parse';
 
@@ -35,7 +36,7 @@ const CHUNK = 100;
 
 @Injectable()
 export class ProductImportService {
-  constructor(private readonly prisma: PrismaService, private readonly products: ProductsService, private readonly images: ImportImageResolver) {}
+  constructor(private readonly prisma: PrismaService, private readonly products: ProductsService, private readonly images: ImportImageResolver, private readonly limits: TenantLimitsService) {}
   private get db() { return this.prisma.db; }
 
   async run(buf: Buffer, opts: ImportOptions): Promise<ImportReport> {
@@ -87,7 +88,13 @@ export class ProductImportService {
       }
       toCreate.length = 0; toCreate.push(...keep);
     }
-    await this.products.assertCanAddLiveProducts(0); // fair-use hook point (no-op here)
+    // fair-use: total product rows (any status)
+    let roomTotal = await this.limits.productRoom();
+    const fit: Valid[] = [];
+    for (const v of toCreate) {
+      if (roomTotal > 0) { fit.push(v); roomTotal--; } else errors.push({ row: v.row, reason: `This store has reached its fair-use limit of products; there is no room for this one. Delete products you no longer sell or contact support.` });
+    }
+    toCreate.length = 0; toCreate.push(...fit);
 
     // 4. categories by name (find or create, top level), images by filename
     const catNames = [...new Set([...toCreate, ...toUpdate].map((v) => v.category).filter(Boolean) as string[])];

@@ -5,7 +5,7 @@ import { AuthService } from '../auth/auth.service';
 import { AuthActor } from '../common/request-context';
 import { PrismaService } from '../prisma/prisma.service';
 import { TenantResolver } from '../tenancy/tenant-resolver.service';
-import { CreateTenantDto, ListTenantsQuery } from './tenants.dto';
+import { CreateTenantDto, ListTenantsQuery, SetLimitsDto } from './tenants.dto';
 
 /** Never return razorpay_* columns, not even encrypted. */
 export function presentTenant(t: any) {
@@ -95,6 +95,12 @@ export class SuperadminTenantsService {
   setStatus(actor: AuthActor, id: string, status: TenantStatus, reason?: string) {
     const action = status === 'SUSPENDED' ? 'tenant.suspended' : status === 'LIVE' ? 'tenant.unsuspended' : 'tenant.status_set';
     return this.mutate(actor, id, { status }, action, reason, { status });
+  }
+
+  setLimits(actor: AuthActor, id: string, dto: SetLimitsDto) {
+    if (dto.maxProducts === undefined && dto.maxMediaMb === undefined) throw new BadRequestException('Send maxProducts and/or maxMediaMb');
+    const data = { ...(dto.maxProducts !== undefined ? { maxProducts: dto.maxProducts } : {}), ...(dto.maxMediaMb !== undefined ? { maxMediaMb: dto.maxMediaMb } : {}) };
+    return this.mutate(actor, id, data, 'tenant.limits_set', dto.reason, data);
   }
 
   /** Plan changes never delete data: a STANDARD -> STARTER downgrade keeps existing products but blocks new ones past the cap. */

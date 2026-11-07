@@ -47,10 +47,12 @@ export const SCOPES: Record<string, Scope> = {
   RefreshToken: { kind: 'direct', nullable: true },
   PasswordResetToken: { kind: 'direct', nullable: true },
   Media: { kind: 'direct' },
+  TenantUsage: { kind: 'direct' },
   AuditLog: { kind: 'direct', nullable: true },
 };
 
 /** Tenants may only edit these columns of their own tenant row. Plan/status/expiry/domains: superadmin only. */
+// (maxProducts / maxMediaMb are fair-use limits: superadmin only, like plan.)
 const TENANT_SELF_WRITABLE = new Set([
   'name', 'address', 'gstNumber', 'supportPhone', 'whatsappNumber', 'razorpayKeyEnc', 'razorpaySecretEnc',
 ]);

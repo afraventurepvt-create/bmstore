@@ -32,7 +32,7 @@ const lc = (m: string) => m[0].toLowerCase() + m.slice(1);
 const modelDef = (m: string) => DMMF_MODELS.find((x) => x.name === m)!;
 const pkField = (m: string) => modelDef(m).fields.find((f) => f.isId)!.name; // 'id' or 'tenantId'
 const hasField = (m: string, f: string) => modelDef(m).fields.some((x) => x.name === f);
-const SINGLE_ROW = new Set(['Tenant', 'ThemeConfig', 'Settings']); // exactly one row per tenant
+const SINGLE_ROW = new Set(['Tenant', 'ThemeConfig', 'Settings', 'TenantUsage']); // exactly one row per tenant
 const rnd = () => randomBytes(4).toString('hex');
 
 async function rejection(p: Promise<any>): Promise<any> {
@@ -50,6 +50,7 @@ const factories: Record<string, (db: any, s: Seed, i: number, over?: Row) => Pro
   Tenant: async () => { throw new Error('tenants are provisioned by superadmin, not by tenant code'); },
   ThemeConfig: (db, _s, i, o) => db.themeConfig.create({ data: { layoutVariant: `lv${i}`, bannerUrls: ['b.png'], ...o } }),
   Settings: (db, _s, i, o) => db.settings.create({ data: { orderPrefix: `P${i}`, ...o } }),
+  TenantUsage: (db, _s, _i, o) => db.tenantUsage.create({ data: { ...o } }), // triggers then keep it current
   Category: (db, s, i, o) => db.category.create({ data: { name: `cat${i}`, slug: `cat-${i}-${rnd()}`, parentId: i > 0 ? s.Category[0].id : undefined, ...o } }),
   Customer: (db, _s, i, o) => db.customer.create({ data: { name: `cust${i}`, phone: `9${rnd()}${i}`, email: `c${i}-${rnd()}@x.test`, addresses: [{ line1: 'x' }], ...o } }),
   Product: (db, s, i, o) => db.product.create({ data: { name: `prod${i}`, slug: `prod-${i}-${rnd()}`, price: 10, mrp: 12, sku: `sku-${rnd()}`, stock: 3, categoryId: s.Category[0].id, images: ['i.png'], hsnCode: '6109', ...o } }),
@@ -66,7 +67,7 @@ const factories: Record<string, (db: any, s: Seed, i: number, over?: Row) => Pro
 /** Run a factory against a recorder instead of the DB to obtain the exact create-data it would send. */
 const recorder: any = new Proxy({}, { get: () => ({ create: ({ data }: Row) => ({ __data: data }) }) });
 const dataFor = async (m: string, s: Seed, i: number, over: Row = {}): Promise<Row> => ((await factories[m](recorder, s, i, over)) as any).__data;
-const SEED_ORDER = ['ThemeConfig', 'Settings', 'Category', 'Customer', 'Product', 'Variant', 'Order', 'Coupon', 'Page', 'User', 'RefreshToken', 'PasswordResetToken', 'AuditLog', 'Media'];
+const SEED_ORDER = ['ThemeConfig', 'Settings', 'TenantUsage', 'Category', 'Customer', 'Product', 'Variant', 'Order', 'Coupon', 'Page', 'User', 'RefreshToken', 'PasswordResetToken', 'AuditLog', 'Media'];
 
 // ---- per-model attack metadata ----
 interface Meta {
@@ -80,6 +81,7 @@ const META: Record<string, Meta> = {
   Tenant: { touch: { name: 'touched' }, compound: (r) => ({ slug: r.slug }), createBlocked: true, deleteBlocked: true },
   ThemeConfig: { touch: { layoutVariant: 'touched' } },
   Settings: { touch: { orderPrefix: 'TOUCHED' } },
+  TenantUsage: { touch: { productCount: 99 } },
   Category: {
     touch: { image: 'touched.png' }, compound: (r) => ({ tenantId_slug: { tenantId: r.tenantId, slug: r.slug } }), before: ['product'],
     crossRef: (db, s, o) => factories.Category(db, s, 50, { parentId: o.Category[0].id }),
@@ -129,7 +131,7 @@ describe('GATE: tenant isolation across every model', () => {
   async function snap(who: 'A' | 'B') {
     const out: Record<string, string> = {};
     for (const m of MODELS) {
-      out[m] = JSON.stringify(await (base as any)[lc(m)].findMany({ where: baseWhere(m, T[who].id), orderBy: { [pkField(m)]: 'asc' } }));
+      out[m] = JSON.stringify(await (base as any)[lc(m)].findMany({ where: baseWhere(m, T[who].id), orderBy: { [pkField(m)]: 'asc' } }), (_k, v) => (typeof v === 'bigint' ? v.toString() : v));
     }
     return out;
   }
@@ -179,7 +181,7 @@ describe('GATE: tenant isolation across every model', () => {
         expect(factories[m]).toBeDefined();
         for (const k of ['A', 'B'] as const) expect(seeded[k][m].length).toBeGreaterThan(0);
       }
-      expect(MODELS).toHaveLength(15);
+      expect(MODELS).toHaveLength(16);
     });
     it('money is integer paise everywhere: no Float/Decimal field in any model', () => {
       for (const m of DMMF_MODELS) for (const f of m.fields) expect(`${m.name}.${f.name}:${f.type}`).not.toMatch(/:(Float|Decimal)$/);

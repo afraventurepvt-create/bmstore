@@ -4,6 +4,7 @@ import { RequestContext } from '../common/request-context';
 import { listPage } from '../common/pagination';
 import { slugify, uniqueSlug } from '../common/slug';
 import { PrismaService } from '../prisma/prisma.service';
+import { TenantLimitsService } from '../limits/limits';
 import { PLAN_LIMITS } from '../tenancy/plans';
 import { assertOwnMediaUrls } from './media-url';
 import { BulkProductsDto, CreateProductDto, ListProductsQuery, StockDto, UpdateProductDto, UpdateVariantDto, VariantInput } from './products.dto';
@@ -12,7 +13,7 @@ const INCLUDE: Prisma.ProductInclude = { variants: { orderBy: [{ optionName: 'as
 
 @Injectable()
 export class ProductsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(private readonly prisma: PrismaService, private readonly limits: TenantLimitsService) {}
   private get db() { return this.prisma.db; }
   private tenantId() { return RequestContext.tenantId()!; }
 
@@ -68,6 +69,7 @@ export class ProductsService {
   async create(dto: CreateProductDto) {
     if (dto.mrp < dto.price) throw new BadRequestException('MRP cannot be lower than the selling price');
     assertOwnMediaUrls(this.tenantId(), dto.images);
+    await this.limits.assertProductRoom(1);
     if (dto.status !== 'ARCHIVED') await this.assertCanAddLiveProducts(1);
     await this.assertSkuFree(dto.sku);
     for (const v of dto.variants ?? []) await this.assertVariantSkuFree(v.sku);

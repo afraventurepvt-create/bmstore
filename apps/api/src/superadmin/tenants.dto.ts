@@ -43,6 +43,12 @@ export class SetStatusDto extends ReasonDto {
   @IsEnum(TenantStatus) status!: TenantStatus;
 }
 
+export class SetLimitsDto extends ReasonDto {
+  @IsOptional() @IsInt() @Min(1) @Max(1_000_000) maxProducts?: number;
+  /** megabytes */
+  @IsOptional() @IsInt() @Min(1) @Max(10_000_000) maxMediaMb?: number;
+}
+
 export class SetPlanDto extends ReasonDto {
   @IsEnum(TenantPlan) plan!: TenantPlan;
 }

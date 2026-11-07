@@ -1,7 +1,7 @@
 import { Body, Controller, Get, HttpCode, Param, ParseUUIDPipe, Patch, Post, Query } from '@nestjs/common';
 import { Roles, CurrentUser } from '../auth/decorators';
 import type { AuthActor } from '../common/request-context';
-import { CreateTenantDto, ListTenantsQuery, ReasonDto, SetExpiryDto, SetPlanDto, SetStatusDto } from './tenants.dto';
+import { CreateTenantDto, ListTenantsQuery, ReasonDto, SetExpiryDto, SetLimitsDto, SetPlanDto, SetStatusDto } from './tenants.dto';
 import { SuperadminTenantsService } from './tenants.service';
 
 @Roles('superadmin')
@@ -38,6 +38,12 @@ export class SuperadminTenantsController {
   @Post(':id/status') @HttpCode(200)
   setStatus(@CurrentUser() actor: AuthActor, @Param('id', ParseUUIDPipe) id: string, @Body() dto: SetStatusDto) {
     return this.svc.setStatus(actor, id, dto.status, dto.reason);
+  }
+
+  /** Fair-use limits: max products (rows) and max media storage in MB. */
+  @Patch(':id/limits')
+  setLimits(@CurrentUser() actor: AuthActor, @Param('id', ParseUUIDPipe) id: string, @Body() dto: SetLimitsDto) {
+    return this.svc.setLimits(actor, id, dto);
   }
 
   /** STARTER (10 products max) | STANDARD */
