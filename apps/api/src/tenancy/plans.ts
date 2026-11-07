@@ -1,6 +1,6 @@
 import { TenantPlan, TenantStatus } from '@prisma/client';
 
-/** Plan limits. STARTER's product cap is ALSO enforced by a database trigger (migration *_vocabulary_and_paise). */
+/** Plan limits. STARTER's cap counts DRAFT + ACTIVE products (archived ones free a slot); ALSO enforced by a DB trigger. */
 export const PLAN_LIMITS: Record<TenantPlan, { maxProducts: number | null }> = {
   STARTER: { maxProducts: 10 },
   STANDARD: { maxProducts: null }, // unlimited within fair use
@@ -11,8 +11,8 @@ export const PLAN_LIMIT_ERROR = /plan_limit_exceeded/;
 
 /**
  * Which tenant statuses answer requests on the store host at all.
- * BUILDING: the store is being set up; its admins can log in and work. The public storefront, when it lands, must
- * additionally check status === LIVE before rendering for shoppers.
+ * BUILDING: the store is being set up; its admins can log in and work and the storefront is served as a PREVIEW
+ * (X-Robots-Tag noindex, robots meta tag, ribbon: see preview.ts), so it is never indexed before go-live.
  */
 export const SERVES_REQUESTS: Record<TenantStatus, boolean> = {
   BUILDING: true,

@@ -1,10 +1,21 @@
-import { INestApplication } from '@nestjs/common';
+import { Controller, Get, Header, INestApplication } from '@nestjs/common';
+import { Test } from '@nestjs/testing';
 import { PrismaClient } from '@prisma/client';
 import { execSync } from 'node:child_process';
 import request from 'supertest';
+import { AppModule } from '../src/app.module';
+import { configureApp } from '../src/app.setup';
+import { Public } from '../src/auth/decorators';
 import { AuthService } from '../src/auth/auth.service';
 import { PrismaService } from '../src/prisma/prisma.service';
-import { createApp, deleteTenants, uniq } from './helpers';
+import { deleteTenants, uniq } from './helpers';
+
+/** Stand-in for a storefront page until one exists. */
+@Controller('probe')
+class PageController {
+  @Public() @Get('page') @Header('Content-Type', 'text/html; charset=utf-8')
+  page() { return '<!doctype html><html><head><title>t</title></head><body><h1>Hello</h1></body></html>'; }
+}
 
 describe('superadmin API', () => {
   let app: INestApplication;
@@ -25,7 +36,10 @@ describe('superadmin API', () => {
   };
 
   beforeAll(async () => {
-    app = await createApp();
+    const mod = await Test.createTestingModule({ imports: [AppModule], controllers: [PageController] }).compile();
+    app = mod.createNestApplication();
+    configureApp(app);
+    await app.init();
     prisma = app.get(PrismaService);
     base = prisma.base;
     const auth = app.get(AuthService);
@@ -127,6 +141,26 @@ describe('superadmin API', () => {
       await api().get('/health').set('Host', host).expect(200);
     });
 
+    it('BUILDING stores are previews: noindex header on every response, meta tag + ribbon in HTML; LIVE stores are clean', async () => {
+      await admin('post', `/superadmin/tenants/${id}/status`).send({ status: 'BUILDING' }).expect(200);
+      const json = await api().get('/health').set('Host', host).expect(200);
+      expect(json.headers['x-robots-tag']).toBe('noindex, nofollow');
+      expect(json.body).toEqual({ ok: true, tenant: t.slug }); // JSON untouched
+      const page = await api().get('/probe/page').set('Host', host).expect(200);
+      expect(page.headers['x-robots-tag']).toBe('noindex, nofollow');
+      expect(page.text).toContain('<head><meta name="robots" content="noindex, nofollow">');
+      expect(page.text).toMatch(/<body>\s*<div data-bmstore-preview[^>]*>Preview<\/div>/);
+      expect(page.text).toContain('<h1>Hello</h1>');
+      expect(Number(page.headers['content-length'])).toBe(Buffer.byteLength(page.text));
+      await admin('post', `/superadmin/tenants/${id}/status`).send({ status: 'LIVE' }).expect(200);
+      const live = await api().get('/probe/page').set('Host', host).expect(200);
+      expect(live.headers['x-robots-tag']).toBeUndefined();
+      expect(live.text).not.toMatch(/noindex|data-bmstore-preview/);
+      expect((await api().get('/health').set('Host', host).expect(200)).headers['x-robots-tag']).toBeUndefined();
+      // platform hosts are never previews
+      expect((await api().get('/health').set('Host', 'admin.localhost').expect(200)).headers['x-robots-tag']).toBeUndefined();
+    });
+
     it('generic status endpoint: PARKED blocks, BUILDING serves (admins can work), bogus values rejected', async () => {
       const p = await admin('post', `/superadmin/tenants/${id}/status`).send({ status: 'PARKED', reason: 'churned' }).expect(200);
       expect(p.body.status).toBe('PARKED');
@@ -139,7 +173,7 @@ describe('superadmin API', () => {
       await admin('post', `/superadmin/tenants/${id}/status`).send({}).expect(400);
       await admin('post', `/superadmin/tenants/${id}/status`).send({ status: 'LIVE' }).expect(200);
       const logs = await base.auditLog.findMany({ where: { actorId: adminId, tenantId: id, action: 'tenant.status_set' } });
-      expect(logs.map((l) => (l.meta as any).status).sort()).toEqual(['BUILDING', 'PARKED']);
+      expect(logs.map((l) => (l.meta as any).status).sort()).toEqual(['BUILDING', 'BUILDING', 'PARKED']);
     });
 
     it('set expiry: past blocks, null clears, garbage rejected', async () => {

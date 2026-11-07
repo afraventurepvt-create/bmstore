@@ -45,6 +45,24 @@ describe('plans: STARTER caps products at 10, STANDARD does not', () => {
     expect(await base.product.count({ where: { tenantId: t.id } })).toBe(10);
   });
 
+  it('archived products do not count: archiving frees a slot, un-archiving at the cap is refused', async () => {
+    const t = await starter();
+    await fill(t.id, 10);
+    const first = await base.product.findFirstOrThrow({ where: { tenantId: t.id } });
+    await prisma.runAsTenant(t.id, () => db.product.update({ where: { id: first.id }, data: { status: 'ARCHIVED' } }));
+    await fill(t.id, 1, 10); // slot freed
+    await expect(fill(t.id, 1, 11)).rejects.toThrow(PLAN_LIMIT_ERROR);
+    // bringing the archived one back would make 11 live products
+    await expect(prisma.runAsTenant(t.id, () => db.product.update({ where: { id: first.id }, data: { status: 'ACTIVE' } }))).rejects.toThrow(PLAN_LIMIT_ERROR);
+    // status changes that do not leave ARCHIVED, or between DRAFT and ACTIVE, are untouched
+    await prisma.runAsTenant(t.id, () => db.product.updateMany({ where: { status: 'DRAFT' }, data: { status: 'ACTIVE' } }));
+    await prisma.runAsTenant(t.id, () => db.product.update({ where: { id: first.id }, data: { name: 'renamed' } }));
+    // archived products can be created freely
+    await prisma.runAsTenant(t.id, () => db.product.create({ data: { ...prod(50), status: 'ARCHIVED' } }));
+    expect(await base.product.count({ where: { tenantId: t.id, status: { not: 'ARCHIVED' } } })).toBe(10);
+    expect(await base.product.count({ where: { tenantId: t.id } })).toBe(12);
+  });
+
   it('a createMany that would cross the cap is rejected as a whole', async () => {
     const t = await starter();
     await expect(prisma.runAsTenant(t.id, () => db.product.createMany({ data: Array.from({ length: 11 }, (_, i) => prod(i)) }))).rejects.toThrow(PLAN_LIMIT_ERROR);
