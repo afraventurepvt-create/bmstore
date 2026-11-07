@@ -464,6 +464,152 @@ describe('GATE: tenant isolation across every model', () => {
   });
 
   // ------------------------------------------------------------------------------------------------
+  describe('HTTP ROUTES: every /store route is tenant-bound (inventory comes from the router, not from this file)', () => {
+    let ownerA: string, ownerB: string, emailA: string, emailB: string;
+    const api = () => request(app.getHttpServer());
+    const hostA = () => `${T.A.subdomain}.localhost`;
+    const hostB = () => `${T.B.subdomain}.localhost`;
+    const PW = 'correct-horse-battery';
+    interface Route { method: string; path: string }
+    let routes: Route[] = [];
+
+    beforeAll(async () => {
+      const auth = app.get(AuthService);
+      const hash = await auth.hashPassword(PW);
+      emailA = `owner-${rnd()}@gate-routes.test`; emailB = `owner-${rnd()}@gate-routes.test`;
+      await as('A', () => db.user.create({ data: { email: emailA, passwordHash: hash, role: 'store_owner' } }));
+      await as('B', () => db.user.create({ data: { email: emailB, passwordHash: hash, role: 'store_owner' } }));
+      ownerA = (await api().post('/auth/login').set('Host', hostA()).send({ email: emailA, password: PW }).expect(200)).body.accessToken;
+      ownerB = (await api().post('/auth/login').set('Host', hostB()).send({ email: emailB, password: PW }).expect(200)).body.accessToken;
+      // Express 5 (Nest 11) exposes the router lazily as app.router; Express 4 as app._router.
+      const ex: any = app.getHttpAdapter().getInstance();
+      const stack: any[] = (ex.router ?? ex._router)?.stack ?? [];
+      routes = stack.filter((l) => l.route).flatMap((l) => Object.keys(l.route.methods).filter((m) => l.route.methods[m]).map((m) => ({ method: m.toUpperCase(), path: l.route.path as string })));
+    });
+    afterAll(async () => {
+      // cascades their refresh tokens too, so the final snapshot stays identical
+      await base.user.deleteMany({ where: { email: { in: [emailA, emailB] } } });
+    });
+
+    const fill = (path: string) => path.replace(/:(\w+)/g, () => randomUUID());
+    const storeRoutes = () => routes.filter((r) => r.path.startsWith('/store/') && r.path !== '/store/public');
+    const call = (r: Route, host: string, tok?: string) => {
+      let req = (api() as any)[r.method.toLowerCase()](fill(r.path)).set('Host', host);
+      if (tok) req = req.set('Authorization', `Bearer ${tok}`);
+      return r.method === 'GET' || r.method === 'DELETE' ? req : req.set('Content-Type', 'application/json').send({});
+    };
+
+    it('the router lists the admin surface (sanity: the inventory is real)', () => {
+      expect(storeRoutes().length).toBeGreaterThanOrEqual(50); // 54 at the time of writing; the matrix below runs over whatever exists
+      for (const prefix of ['/store/products', '/store/categories', '/store/orders', '/store/customers', '/store/coupons', '/store/pages', '/store/settings', '/store/theme', '/store/media', '/store/import/products', '/store/usage', '/store/dashboard', '/store/profile']) {
+        expect(storeRoutes().some((r) => r.path.startsWith(prefix))).toBe(true);
+      }
+    });
+
+    it('anonymous -> 401, the other store\'s owner on this host -> 403, this owner on the other host -> 403, on every store route', async () => {
+      const failures: string[] = [];
+      for (const r of storeRoutes()) {
+        const anon = await call(r, hostA());
+        const foreign = await call(r, hostA(), ownerB);
+        const wrongHost = await call(r, hostB(), ownerA);
+        if (anon.status !== 401) failures.push(`${r.method} ${r.path} anonymous -> ${anon.status}`);
+        if (foreign.status !== 403) failures.push(`${r.method} ${r.path} B's token on A -> ${foreign.status}`);
+        if (wrongHost.status !== 403) failures.push(`${r.method} ${r.path} A's token on B -> ${wrongHost.status}`);
+      }
+      expect(failures).toEqual([]);
+    });
+
+    it('superadmin routes refuse store owners everywhere', async () => {
+      const sa = routes.filter((r) => r.path.startsWith('/superadmin/'));
+      expect(sa.length).toBeGreaterThanOrEqual(8);
+      for (const r of sa) {
+        expect((await call(r, 'admin.localhost', ownerA)).status).toBe(403);
+        expect((await call(r, hostA(), ownerA)).status).toBe(403);
+      }
+    });
+
+    it("A's owner, on A's host, cannot reach any of B's rows through any admin route (404s, never 200)", async () => {
+      const B = seeded.B;
+      const me = (m: 'get' | 'patch' | 'delete' | 'post', path: string, body?: any) => {
+        let req = (api() as any)[m](path).set('Host', hostA()).set('Authorization', `Bearer ${ownerA}`);
+        return body !== undefined ? req.send(body) : req;
+      };
+      const probes: Array<[string, Promise<request.Response>, number]> = [
+        ['GET product', me('get', `/store/products/${B.Product[0].id}`), 404],
+        ['PATCH product', me('patch', `/store/products/${B.Product[0].id}`, { name: 'pwn' }), 404],
+        ['PATCH stock', me('patch', `/store/products/${B.Product[0].id}/stock`, { stock: 0 }), 404],
+        ['DELETE product', me('delete', `/store/products/${B.Product[0].id}`), 404],
+        ['POST variant on B product', me('post', `/store/products/${B.Product[0].id}/variants`, { optionName: 'x', optionValue: 'y' }), 404],
+        ['PATCH B variant under A product', me('patch', `/store/products/${seeded.A.Product[0].id}/variants/${B.Variant[0].id}`, { stock: 0 }), 404],
+        ['DELETE B variant under A product', me('delete', `/store/products/${seeded.A.Product[0].id}/variants/${B.Variant[0].id}`), 404],
+        ['bulk B ids', me('post', '/store/products/bulk', { ids: B.Product.map((p: Row) => p.id), action: 'ARCHIVE' }), 200],
+        ['GET category', me('get', `/store/categories/${B.Category[0].id}`), 404],
+        ['PATCH category', me('patch', `/store/categories/${B.Category[0].id}`, { name: 'pwn' }), 404],
+        ['DELETE category', me('delete', `/store/categories/${B.Category[0].id}`), 404],
+        ['product into B category', me('post', '/store/products', { name: 'x', price: 1, mrp: 1, categoryId: B.Category[0].id }), 400],
+        ['GET order', me('get', `/store/orders/${B.Order[0].id}`), 404],
+        ['order status', me('post', `/store/orders/${B.Order[0].id}/status`, { status: 'CONFIRMED' }), 404],
+        ['order mark-paid', me('post', `/store/orders/${B.Order[0].id}/mark-paid`), 404],
+        ['order payment', me('post', `/store/orders/${B.Order[0].id}/payment-status`, { status: 'PAID' }), 404],
+        ['GET customer', me('get', `/store/customers/${B.Customer[0].id}`), 404],
+        ['PATCH customer', me('patch', `/store/customers/${B.Customer[0].id}`, { name: 'pwn' }), 404],
+        ['GET coupon', me('get', `/store/coupons/${B.Coupon[0].id}`), 404],
+        ['DELETE coupon', me('delete', `/store/coupons/${B.Coupon[0].id}`), 404],
+        ['GET page', me('get', `/store/pages/${B.Page[0].id}`), 404],
+        ['PATCH page', me('patch', `/store/pages/${B.Page[0].id}`, { title: 'pwn' }), 404],
+        ['GET media', me('get', `/store/media/${B.Media[0].id}`), 404],
+        ['DELETE media', me('delete', `/store/media/${B.Media[0].id}`), 404],
+      ];
+      const failures: string[] = [];
+      for (const [name, p, expected] of probes) {
+        const r = await p;
+        if (r.status !== expected) failures.push(`${name} -> ${r.status} (expected ${expected})`);
+      }
+      expect(failures).toEqual([]);
+      // the bulk action reported 0 rows touched
+      expect((await me('post', '/store/products/bulk', { ids: B.Product.map((p: Row) => p.id), action: 'ARCHIVE' })).body.affected).toBe(0);
+      // listing never leaks: every id returned belongs to A
+      for (const [path, model] of [['/store/products?pageSize=100', 'Product'], ['/store/orders?pageSize=100', 'Order'], ['/store/customers?pageSize=100', 'Customer'], ['/store/coupons?pageSize=100', 'Coupon'], ['/store/pages?pageSize=100', 'Page'], ['/store/media?pageSize=100', 'Media']] as const) {
+        const items: Row[] = (await me('get', path).expect(200)).body.items;
+        const mine = new Set(seeded.A[model].map((r: Row) => r.id));
+        const theirs = new Set(seeded.B[model].map((r: Row) => r.id));
+        expect(items.some((i) => theirs.has(i.id))).toBe(false);
+        expect(items.filter((i) => mine.has(i.id)).length).toBe(seeded.A[model].length);
+      }
+      const cats: Row[] = (await me('get', '/store/categories').expect(200)).body.items;
+      expect(cats.some((c) => seeded.B.Category.some((b: Row) => b.id === c.id))).toBe(false);
+    });
+
+    it('MEDIA PATHS: keys are tenant-prefixed, B\'s media URLs/ids are refused on A\'s products, categories, theme, uploads and imports', async () => {
+      const me = (m: 'get' | 'patch' | 'put' | 'delete' | 'post', path: string, body?: any) => {
+        let req = (api() as any)[m](path).set('Host', hostA()).set('Authorization', `Bearer ${ownerA}`);
+        return body !== undefined ? req.send(body) : req;
+      };
+      const bUrl = `https://cdn.example.test/tenants/${T.B.id}/product/2026/11/x.webp`;
+      expect((await me('post', '/store/products', { name: 'x', price: 1, mrp: 1, images: [bUrl] })).status).toBe(400);
+      expect((await me('patch', `/store/products/${seeded.A.Product[0].id}`, { images: [bUrl] })).status).toBe(400);
+      expect((await me('post', '/store/categories', { name: 'x', image: bUrl })).status).toBe(400);
+      expect((await me('put', '/store/theme', { logoUrl: bUrl })).status).toBe(400);
+      expect((await me('put', '/store/theme', { bannerUrls: [bUrl] })).status).toBe(400);
+      // presigned keys always sit under tenants/<A>/
+      const pre = await me('post', '/store/media/presign', { files: [{ filename: 'gate.jpg', contentType: 'image/jpeg', size: 10 }] }).expect(200);
+      const f = pre.body.files[0];
+      expect(new URL(f.uploadUrl).pathname).toContain(`/tenants/${T.A.id}/originals/`);
+      expect(new URL(f.uploadUrl).pathname).not.toContain(T.B.id);
+      expect((await me('post', '/store/uploads/presign', { kind: 'product', contentType: 'image/jpeg', size: 10 }).expect(200)).body.key.startsWith(`tenants/${T.A.id}/`)).toBe(true);
+      // completing B's ids: unknown, never touched
+      const done = await me('post', '/store/media/complete', { ids: seeded.B.Media.map((m: Row) => m.id) }).expect(200);
+      expect(done.body.results.every((r: Row) => r.status === 'NOT_FOUND')).toBe(true);
+      // import cannot attach B's image filename (B's READY media are invisible from A)
+      const csv = `name,price,mrp,image_filename\r\nGate,1,1,${seeded.B.Media[0].filename}\r\n`;
+      const imp = await me('post', '/store/import/products?filename=g.csv&dryRun=true').set('Content-Type', 'text/csv').send(csv).expect(200);
+      expect(imp.body.warnings.some((w: Row) => /has not been uploaded yet/.test(w.reason))).toBe(true);
+      // clean up our own pending row so the final snapshot is unchanged
+      await me('delete', `/store/media/${f.id}`).expect(204);
+    });
+  });
+
+  // ------------------------------------------------------------------------------------------------
   describe('HTTP layer: a store token never works on another store', () => {
     it('A\'s owner token is rejected on B\'s host for every store route; B\'s data is untouched', async () => {
       const auth = app.get(AuthService);
