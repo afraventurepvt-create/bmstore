@@ -1,0 +1,203 @@
+{
+  "version": 1,
+  "currency": "INR",
+  "stores": [
+    {
+      "slug": "meenakshi-silks",
+      "subdomain": "meenakshi-silks",
+      "name": "Meenakshi Silks",
+      "catalog_csv": "silks.csv",
+      "tagline": {
+        "en": "Handwoven silks and cottons from the weaving towns of Tamil Nadu",
+        "ta": "தமிழகத்தின் நெசவு ஊர்களிலிருந்து கைத்தறி பட்டும் பருத்தியும்"
+      },
+      "about": "Meenakshi Silks is a family-run saree shop in Kanchipuram. We buy directly from weaver families in Kanchipuram, Arani, Karaikudi, Madurai and Negamam, so each saree on this site is the one you will receive: no stock photos, no substitutions. Alongside sarees we stock veshtis, angavastrams, readymade blouses and festive wear for children. Every silk saree ships with its weaver's fold intact; we are happy to send extra photographs or a short video of any piece on request before you order.",
+      "address": {
+        "line1": "No. 14, Gandhi Road",
+        "line2": "Near Kamakshi Amman Temple",
+        "city": "Kanchipuram",
+        "district": "Kanchipuram",
+        "state": "Tamil Nadu",
+        "pincode": "631502",
+        "country": "IN"
+      },
+      "support_phone": "+91 00000 00001",
+      "whatsapp_number": "+91 00000 00001",
+      "support_email": "hello@meenakshisilks.example",
+      "gst_number": null,
+      "settings": {
+        "shipping_mode": "free_above",
+        "flat_rate": 99,
+        "free_above": 2999,
+        "cod_enabled": true,
+        "cod_charge": 50,
+        "order_prefix": "MS",
+        "dispatch_note": "Ships in 1–2 working days; silks are sent in a cloth bag inside a rigid box.",
+        "returns_note": "7-day exchange for unused, unwashed items with tags; no exchange on fall-stitched or altered sarees."
+      },
+      "theme": {
+        "layout_variant": "V1",
+        "layout_notes": "Classic layout: full-width hero banner, category tiles, product grid 3-up on desktop. Suits a heritage saree store.",
+        "palette_id": "arakku-gold",
+        "primary_color": "#7B1E2B",
+        "secondary_color": "#C9A227",
+        "background": "#FBF7F0",
+        "text": "#2B1D1F",
+        "font_pair_id": "playfair-lato",
+        "fonts": {
+          "heading": "Playfair Display",
+          "body": "Lato"
+        },
+        "header_style": "centered-logo",
+        "card_style": "portrait-image",
+        "homepage_sections": [
+          "hero",
+          "categories",
+          "featured-products",
+          "about-strip"
+        ]
+      },
+      "categories": [
+        "Silk Sarees",
+        "Cotton Sarees",
+        "Veshti & Angavastram",
+        "Kids Wear",
+        "Readymade & Blouses"
+      ],
+      "product_count": 25,
+      "demo_notice": "Fictional business. Address, phone, email and GST are placeholders; replace before any public use."
+    },
+    {
+      "slug": "anna-foods",
+      "subdomain": "anna-foods",
+      "name": "Anna Foods",
+      "catalog_csv": "foods.csv",
+      "tagline": {
+        "en": "Home-style snacks, sweets and spices from Madurai",
+        "ta": "மதுரையின் வீட்டுச் சுவை: பலகாரம், இனிப்பு, மசாலா"
+      },
+      "about": "Anna Foods makes small-batch snacks, sweets, spice powders and pickles in Madurai using the recipes our kitchen has always used. Savouries are fried in groundnut oil, sweets are made with cow ghee, and masalas are roasted and ground the week they ship. We also pack millets, cold-pressed oils and filter coffee from producers we know by name. Everything is labelled with the packing date and a best-before window; we ship within Tamil Nadu and across India.",
+      "address": {
+        "line1": "No. 27, West Masi Street",
+        "line2": "",
+        "city": "Madurai",
+        "district": "Madurai",
+        "state": "Tamil Nadu",
+        "pincode": "625001",
+        "country": "IN"
+      },
+      "support_phone": "+91 00000 00002",
+      "whatsapp_number": "+91 00000 00002",
+      "support_email": "orders@annafoods.example",
+      "gst_number": null,
+      "fssai_license": null,
+      "settings": {
+        "shipping_mode": "free_above",
+        "flat_rate": 60,
+        "free_above": 999,
+        "cod_enabled": true,
+        "cod_charge": 30,
+        "order_prefix": "AF",
+        "dispatch_note": "Snacks and masalas ship same or next working day; fresh sweets (Mysore pak, adhirasam, laddu, halwa) are made to order and dispatched Monday–Thursday only.",
+        "returns_note": "Food items cannot be returned; damaged or leaking parcels are replaced if reported with photos within 48 hours of delivery."
+      },
+      "theme": {
+        "layout_variant": "V2",
+        "layout_notes": "Grid-first layout: compact header with search, horizontal category chips, dense 4-up product grid with pack size visible. Suits a grocery/snacks store with many low-ticket items.",
+        "palette_id": "turmeric-leaf",
+        "primary_color": "#2F6B3A",
+        "secondary_color": "#E0A526",
+        "background": "#FFFDF7",
+        "text": "#1F2A1E",
+        "font_pair_id": "poppins-nunito",
+        "fonts": {
+          "heading": "Poppins",
+          "body": "Nunito"
+        },
+        "header_style": "compact-search",
+        "card_style": "square-image",
+        "homepage_sections": [
+          "category-chips",
+          "featured-picks",
+          "featured-products",
+          "trust-strip"
+        ]
+      },
+      "categories": [
+        "Savouries",
+        "Sweets",
+        "Spices & Masalas",
+        "Pickles & Podis",
+        "Millets & Rice",
+        "Oils & Coffee"
+      ],
+      "product_count": 25,
+      "demo_notice": "Fictional business. Address, phone, email and GST are placeholders; replace before any public use."
+    },
+    {
+      "slug": "sri-gold-jewels",
+      "subdomain": "sri-gold-jewels",
+      "name": "Sri Gold Jewels",
+      "catalog_csv": "jewels.csv",
+      "tagline": {
+        "en": "Temple jewellery and everyday sparkle, without the gold price",
+        "ta": "கோவில் நகைகளின் அழகு, தங்க விலை இல்லாமல்"
+      },
+      "about": "Sri Gold Jewels sells imitation and gold-plated jewellery from T. Nagar, Chennai: temple sets, kemp and AD stone pieces, bangles, jhumkas and bridal collections. All pieces are brass or copper-alloy based with matte gold, antique or rhodium plating; nothing on this site is real gold or silver, and prices reflect that. Each listing states the base metal, stone type, length and closure so you know exactly what you are buying. Bridal sets can be matched to your saree colour on request.",
+      "address": {
+        "line1": "No. 8, Ranganathan Street",
+        "line2": "T. Nagar",
+        "city": "Chennai",
+        "district": "Chennai",
+        "state": "Tamil Nadu",
+        "pincode": "600017",
+        "country": "IN"
+      },
+      "support_phone": "+91 00000 00003",
+      "whatsapp_number": "+91 00000 00003",
+      "support_email": "care@srigoldjewels.example",
+      "gst_number": null,
+      "settings": {
+        "shipping_mode": "free_above",
+        "flat_rate": 49,
+        "free_above": 799,
+        "cod_enabled": true,
+        "cod_charge": 40,
+        "order_prefix": "SGJ",
+        "dispatch_note": "Ships in 1–2 working days in a padded jewellery box.",
+        "returns_note": "7-day return for unworn items in original packaging; earrings are exchange-only for hygiene reasons."
+      },
+      "theme": {
+        "layout_variant": "V3",
+        "layout_notes": "Editorial layout: split hero (image + text), large 2-up/3-up product cards on dark or ivory background, sticky add-to-cart on product page. Suits jewellery where the photo sells.",
+        "palette_id": "ivory-rosegold",
+        "primary_color": "#1F1A17",
+        "secondary_color": "#B76E79",
+        "background": "#F8F3EE",
+        "text": "#1F1A17",
+        "font_pair_id": "cormorant-montserrat",
+        "fonts": {
+          "heading": "Cormorant Garamond",
+          "body": "Montserrat"
+        },
+        "header_style": "transparent-over-hero",
+        "card_style": "large-square-hover-zoom",
+        "homepage_sections": [
+          "split-hero",
+          "collections",
+          "new-arrivals",
+          "bridal-banner"
+        ]
+      },
+      "categories": [
+        "Temple Jewellery",
+        "Bangles",
+        "Earrings",
+        "Bridal Sets",
+        "Hair & Accessories"
+      ],
+      "product_count": 25,
+      "demo_notice": "Fictional business. Address, phone, email and GST are placeholders; replace before any public use."
+    }
+  ]
+}
