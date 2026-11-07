@@ -52,6 +52,15 @@ Works with S3 or any S3-compatible store (`S3_ENDPOINT`, `S3_FORCE_PATH_STYLE=1`
 a test fails if one appears, and root `package.json` `overrides` pin the transitive `multer` / `deepmerge-ts` copies
 past their advisories.
 
+## Images (bulk upload)
+
+`POST /store/media/presign { files: [{ filename, contentType, size, kind }] }` → one presigned PUT per file → the browser
+uploads straight to storage → `POST /store/media/complete { ids }` → a worker converts each image to WebP (longest edge
+1600px, EXIF stripped, auto-rotated) plus a 400px thumbnail, deletes the original and records the stored bytes
+(`sum(media.bytes)` per tenant is the media usage). Locally `docker compose up -d` provides MinIO (bucket `bmstore`,
+console on :9001); production uses R2 or S3 through the same `S3_*` env vars. Tests run against an in-process S3 double.
+The worker runs inside the API process (`MEDIA_WORKER=1`); the CSV import attaches images by `image_filename`.
+
 ## Two database roles
 
 | Env var | Role | Used for |

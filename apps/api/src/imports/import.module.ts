@@ -1,12 +1,13 @@
 import { Module } from '@nestjs/common';
 import { CatalogModule } from '../catalog/catalog.module';
+import { MediaImageResolver, MediaModule } from '../media/media.module';
 import { ImportController } from './import.controller';
-import { ImportImageResolver, NoImageResolver, ProductImportService } from './product-import.service';
+import { ImportImageResolver, ProductImportService } from './product-import.service';
 
 @Module({
-  imports: [CatalogModule],
+  imports: [CatalogModule, MediaModule],
   controllers: [ImportController],
-  providers: [ProductImportService, { provide: ImportImageResolver, useClass: NoImageResolver }],
+  providers: [ProductImportService, { provide: ImportImageResolver, useExisting: MediaImageResolver }],
   exports: [ProductImportService],
 })
 export class ImportModule {}

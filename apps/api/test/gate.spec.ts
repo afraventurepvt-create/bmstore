@@ -61,11 +61,12 @@ const factories: Record<string, (db: any, s: Seed, i: number, over?: Row) => Pro
   RefreshToken: (db, s, i, o) => db.refreshToken.create({ data: { userId: s.User[0].id, familyId: randomUUID(), tokenHash: `h-${rnd()}-${i}`, expiresAt: new Date(Date.now() + 86_400_000), ...o } }),
   PasswordResetToken: (db, s, i, o) => db.passwordResetToken.create({ data: { userId: s.User[0].id, tokenHash: `r-${rnd()}-${i}`, expiresAt: new Date(Date.now() + 1_800_000), ...o } }),
   AuditLog: (db, _s, i, o) => db.auditLog.create({ data: { action: `gate.seed.${i}`, meta: { i }, ...o } }),
+  Media: (db, _s, i, o) => db.media.create({ data: { kind: 'product', filename: `img-${i}.jpg`, contentType: 'image/jpeg', originalKey: `tenants/x/originals/${rnd()}.jpg`, declaredBytes: 10, ...o } }),
 };
 /** Run a factory against a recorder instead of the DB to obtain the exact create-data it would send. */
 const recorder: any = new Proxy({}, { get: () => ({ create: ({ data }: Row) => ({ __data: data }) }) });
 const dataFor = async (m: string, s: Seed, i: number, over: Row = {}): Promise<Row> => ((await factories[m](recorder, s, i, over)) as any).__data;
-const SEED_ORDER = ['ThemeConfig', 'Settings', 'Category', 'Customer', 'Product', 'Variant', 'Order', 'Coupon', 'Page', 'User', 'RefreshToken', 'PasswordResetToken', 'AuditLog'];
+const SEED_ORDER = ['ThemeConfig', 'Settings', 'Category', 'Customer', 'Product', 'Variant', 'Order', 'Coupon', 'Page', 'User', 'RefreshToken', 'PasswordResetToken', 'AuditLog', 'Media'];
 
 // ---- per-model attack metadata ----
 interface Meta {
@@ -108,6 +109,7 @@ const META: Record<string, Meta> = {
     crossRef: (db, s, o) => factories.PasswordResetToken(db, s, 50, { userId: o.User[0].id }),
   },
   AuditLog: { touch: { action: 'touched' }, updateBlocked: true, deleteBlocked: true },
+  Media: { touch: { error: 'touched' } },
 };
 
 describe('GATE: tenant isolation across every model', () => {
@@ -177,7 +179,7 @@ describe('GATE: tenant isolation across every model', () => {
         expect(factories[m]).toBeDefined();
         for (const k of ['A', 'B'] as const) expect(seeded[k][m].length).toBeGreaterThan(0);
       }
-      expect(MODELS).toHaveLength(14);
+      expect(MODELS).toHaveLength(15);
     });
     it('money is integer paise everywhere: no Float/Decimal field in any model', () => {
       for (const m of DMMF_MODELS) for (const f of m.fields) expect(`${m.name}.${f.name}:${f.type}`).not.toMatch(/:(Float|Decimal)$/);
@@ -187,6 +189,7 @@ describe('GATE: tenant isolation across every model', () => {
       // Feature code must use `prisma.db`. Adding a file here requires a deliberate edit + review.
       const ALLOW = new Set([
         'prisma/prisma.service.ts', 'prisma/tenant-scope.ts', 'tenancy/tenant-resolver.service.ts', 'superadmin/tenants.service.ts',
+        'media/media-worker.ts', // claims queued images across tenants (one SKIP LOCKED update); processing runs inside runAsTenant
       ]);
       const root = join(__dirname, '..', 'src');
       const walk = (d: string): string[] => readdirSync(d).flatMap((f) => (statSync(join(d, f)).isDirectory() ? walk(join(d, f)) : [join(d, f)]));

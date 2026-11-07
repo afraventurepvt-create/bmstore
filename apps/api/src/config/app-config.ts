@@ -44,7 +44,10 @@ export class AppConfig {
   readonly s3SecretAccessKey = process.env.S3_SECRET_ACCESS_KEY || undefined;
   /** Where uploaded objects are served from (CDN). Defaults to the bucket's own URL. */
   readonly s3PublicBaseUrl = process.env.S3_PUBLIC_BASE_URL || undefined;
-  readonly uploadMaxBytes = Number(process.env.UPLOAD_MAX_BYTES ?? 5 * 1024 * 1024);
+  readonly uploadMaxBytes = Number(process.env.UPLOAD_MAX_BYTES ?? 12 * 1024 * 1024);
+  /** Image processing worker inside the API process (MEDIA_WORKER=0 to run it elsewhere). Off under test; tests call runOnce(). */
+  readonly mediaWorkerEnabled = (process.env.MEDIA_WORKER ?? (process.env.NODE_ENV === 'test' ? '0' : '1')) === '1';
+  readonly mediaWorkerIntervalMs = Number(process.env.MEDIA_WORKER_INTERVAL_MS ?? 3000);
   readonly uploadUrlTtlSec = Number(process.env.UPLOAD_URL_TTL_SECONDS ?? 300);
 
   /** Forgot-password requests per email per window (silently dropped above it) and per IP. */

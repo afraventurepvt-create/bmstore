@@ -46,6 +46,7 @@ export const SCOPES: Record<string, Scope> = {
   User: { kind: 'direct', nullable: true },
   RefreshToken: { kind: 'direct', nullable: true },
   PasswordResetToken: { kind: 'direct', nullable: true },
+  Media: { kind: 'direct' },
   AuditLog: { kind: 'direct', nullable: true },
 };
 

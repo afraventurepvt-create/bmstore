@@ -1,6 +1,7 @@
 /** Direct-to-S3 presigned uploads: signed offline, so no network is needed. */
-const SAVED = Object.fromEntries(['S3_BUCKET', 'S3_REGION', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY', 'S3_PUBLIC_BASE_URL'].map((k) => [k, process.env[k]]));
-Object.assign(process.env, { S3_BUCKET: 'bm-test-bucket', S3_REGION: 'ap-south-1', S3_ACCESS_KEY_ID: 'AKIATESTKEY', S3_SECRET_ACCESS_KEY: 'test-secret', S3_PUBLIC_BASE_URL: 'https://cdn.example.test' });
+// This suite asserts the AWS-shaped URL, so it overrides the S3 double configured by setup-env.ts and restores it after.
+const SAVED = Object.fromEntries(['S3_BUCKET', 'S3_REGION', 'S3_ACCESS_KEY_ID', 'S3_SECRET_ACCESS_KEY', 'S3_PUBLIC_BASE_URL', 'S3_ENDPOINT', 'S3_FORCE_PATH_STYLE'].map((k) => [k, process.env[k]]));
+Object.assign(process.env, { S3_BUCKET: 'bm-test-bucket', S3_REGION: 'ap-south-1', S3_ACCESS_KEY_ID: 'AKIATESTKEY', S3_SECRET_ACCESS_KEY: 'test-secret', S3_PUBLIC_BASE_URL: 'https://cdn.example.test', S3_ENDPOINT: '', S3_FORCE_PATH_STYLE: '0' });
 
 import { INestApplication } from '@nestjs/common';
 import { PrismaClient } from '@prisma/client';
@@ -10,6 +11,7 @@ import request from 'supertest';
 import { AuthService } from '../src/auth/auth.service';
 import { AppConfig } from '../src/config/app-config';
 import { PrismaService } from '../src/prisma/prisma.service';
+import { ObjectStorageService } from '../src/storage/object-storage.service';
 import { UploadsService } from '../src/uploads/uploads.service';
 import { createApp, deleteTenants, makeTenant, uniq } from './helpers';
 
@@ -90,11 +92,12 @@ describe('uploads: presigned direct-to-S3 PUTs', () => {
   });
 
   it('works against S3-compatible endpoints (path style) and answers 503 when not configured', async () => {
-    const compat = new UploadsService({ ...cfg, s3Endpoint: 'http://localhost:9000', s3ForcePathStyle: true, s3PublicBaseUrl: undefined } as AppConfig);
+    const mk = (over: Partial<AppConfig>) => { const c = { ...cfg, ...over } as AppConfig; return new UploadsService(c, new ObjectStorageService(c)); };
+    const compat = mk({ s3Endpoint: 'http://localhost:9000', s3ForcePathStyle: true, s3PublicBaseUrl: undefined });
     const r = await prisma.runAsTenant(A.id, () => compat.presign({ kind: 'page', contentType: 'image/gif', size: 5 }));
     expect(r.uploadUrl.startsWith(`http://localhost:9000/bm-test-bucket/tenants/${A.id}/page/`)).toBe(true);
     expect(r.publicUrl).toBe(`http://localhost:9000/bm-test-bucket/${r.key}`);
-    const off = new UploadsService({ ...cfg, s3Bucket: undefined } as AppConfig);
+    const off = mk({ s3Bucket: undefined });
     expect(off.configured).toBe(false);
     await expect(prisma.runAsTenant(A.id, () => off.presign({ kind: 'page', contentType: 'image/gif', size: 5 }))).rejects.toThrow(/not configured/);
     await expect(compat.presign({ kind: 'page', contentType: 'image/gif', size: 5 })).rejects.toThrow(/No tenant context/);

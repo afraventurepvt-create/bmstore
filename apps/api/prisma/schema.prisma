@@ -73,6 +73,14 @@ enum ShippingMode {
   FREE_ABOVE
 }
 
+enum MediaStatus {
+  PENDING // presigned, bytes not confirmed yet
+  UPLOADED // object confirmed in storage, waiting for the worker
+  PROCESSING
+  READY // webp + thumbnail stored, original removed
+  FAILED
+}
+
 // MONEY: every amount is an integer number of paise (Int). No Float/Decimal columns anywhere; the gate test enforces it.
 
 model Tenant {
@@ -104,6 +112,7 @@ model Tenant {
   users               User[]
   refreshTokens       RefreshToken[]
   passwordResetTokens PasswordResetToken[]
+  media               Media[]
 
   @@index([status, expiresAt])
   @@map("tenants")
@@ -272,17 +281,17 @@ model Page {
 }
 
 model Settings {
-  tenantId     String       @id @map("tenant_id") @db.Uuid
-  shippingMode ShippingMode @default(FLAT) @map("shipping_mode")
-  flatRate     Int          @default(0) @map("flat_rate") // paise
-  freeAbove    Int?         @map("free_above") // paise
-  codEnabled   Boolean      @default(true) @map("cod_enabled")
-  codCharge    Int          @default(0) @map("cod_charge") // paise
-  orderPrefix  String       @default("ORD") @map("order_prefix")
+  tenantId          String       @id @map("tenant_id") @db.Uuid
+  shippingMode      ShippingMode @default(FLAT) @map("shipping_mode")
+  flatRate          Int          @default(0) @map("flat_rate") // paise
+  freeAbove         Int?         @map("free_above") // paise
+  codEnabled        Boolean      @default(true) @map("cod_enabled")
+  codCharge         Int          @default(0) @map("cod_charge") // paise
+  orderPrefix       String       @default("ORD") @map("order_prefix")
   /// Per-city shipping overrides: [{ "city": "Chennai", "ratePaise": 4000 }] (city matched case-insensitively)
-  cityRates    Json         @default("[]") @map("city_rates")
+  cityRates         Json         @default("[]") @map("city_rates")
   /// Products at or below this stock count as "low stock" on the dashboard
-  lowStockThreshold Int     @default(5) @map("low_stock_threshold")
+  lowStockThreshold Int          @default(5) @map("low_stock_threshold")
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
 
@@ -334,6 +343,37 @@ model RefreshToken {
   @@index([tenantId, userId])
   @@index([familyId])
   @@map("refresh_tokens")
+}
+
+// Images uploaded straight to object storage (presigned PUT). The worker converts them to WebP (max 1600px) plus a
+// 400px thumbnail, strips EXIF, and records the stored bytes; sum(bytes) per tenant is the media usage.
+model Media {
+  id            String      @id @default(uuid()) @db.Uuid
+  tenantId      String      @map("tenant_id") @db.Uuid
+  kind          String // product | category | logo | banner | page
+  filename      String // as named by the client; CSV import matches image_filename against it
+  contentType   String      @map("content_type")
+  originalKey   String      @map("original_key")
+  key           String? // processed webp
+  thumbKey      String?     @map("thumb_key")
+  width         Int?
+  height        Int?
+  declaredBytes Int         @map("declared_bytes")
+  bytes         Int         @default(0) // bytes currently stored for this item (original, then webp + thumb)
+  status        MediaStatus @default(PENDING)
+  error         String?
+  attempts      Int         @default(0)
+  createdAt     DateTime    @default(now()) @map("created_at")
+  updatedAt     DateTime    @default(now()) @updatedAt @map("updated_at")
+  readyAt       DateTime?   @map("ready_at")
+
+  tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+
+  @@unique([tenantId, id])
+  @@index([tenantId, status])
+  @@index([tenantId, filename])
+  @@index([status, createdAt])
+  @@map("media")
 }
 
 // Password reset: only the sha256 of the emailed token is stored; single-use (used_at), 30 minute expiry.

@@ -9,3 +9,11 @@ process.env.ENCRYPTION_KEY ??= Buffer.alloc(32, 7).toString('base64');
 // Suites log in many times from 127.0.0.1; the dedicated auth-protection suite sets tight limits itself.
 process.env.LOGIN_IP_LIMIT ??= '1000';
 process.env.FORGOT_PER_IP_LIMIT ??= '1000';
+// Object storage: the in-process S3 double started by global-setup.ts (real MinIO/R2/S3 use the same client).
+process.env.S3_ENDPOINT ??= `http://127.0.0.1:${process.env.FAKE_S3_PORT ?? 9100}`;
+process.env.S3_FORCE_PATH_STYLE ??= '1';
+process.env.S3_BUCKET ??= 'bmstore-test';
+process.env.S3_REGION ??= 'ap-south-1';
+process.env.S3_ACCESS_KEY_ID ??= 'test-access-key';
+process.env.S3_SECRET_ACCESS_KEY ??= 'test-secret-key';
+process.env.MEDIA_WORKER ??= '0';
