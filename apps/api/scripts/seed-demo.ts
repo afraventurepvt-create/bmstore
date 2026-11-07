@@ -23,6 +23,7 @@ import { MediaWorker } from '../src/media/media-worker';
 import { MediaService } from '../src/media/media.service';
 import { PrismaService } from '../src/prisma/prisma.service';
 import { ObjectStorageService } from '../src/storage/object-storage.service';
+import { TenantResolver } from '../src/tenancy/tenant-resolver.service';
 
 export interface SeedOptions { slug: string; name?: string; ownerEmail?: string; password?: string; withImages?: boolean; withOrders?: boolean; quiet?: boolean }
 export interface SeedResult { tenantId: string; products: number; images: number; orders: number; customers: number; warnings: string[] }
@@ -74,6 +75,8 @@ export async function seedDemo(app: INestApplicationContext, opts: SeedOptions):
   const tenant = await prisma.base.tenant.create({
     data: { name, slug: opts.slug, subdomain: opts.slug, plan: 'STANDARD', status: 'LIVE', address: '12, Nethaji Road, Kanchipuram 631501', gstNumber: '33ABCDE1234F1Z5', supportPhone: '9876543210', whatsappNumber: '919876543210' },
   });
+  // the Host -> tenant cache may still point at the previous store with this slug (5 min TTL): drop it
+  await app.get(TenantResolver).invalidate({ subdomain: opts.slug }, old ?? {});
   const passwordHash = await auth.hashPassword(password);
   await prisma.base.user.create({ data: { tenantId: tenant.id, email: ownerEmail, passwordHash, role: 'store_owner' } });
   await prisma.base.user.create({ data: { tenantId: tenant.id, email: `staff@${opts.slug}.test`, passwordHash, role: 'staff' } });

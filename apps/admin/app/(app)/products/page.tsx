@@ -45,7 +45,7 @@ function ProductsList() {
               <Link href={`/products/${p.id}`} className="flex items-center gap-3 flex-1 min-w-0 tap">
                 <Thumb src={p.images?.[0]} />
                 <div className="min-w-0 flex-1">
-                  <div className="font-semibold truncate">{p.name}</div>
+                  <div className="font-semibold leading-snug line-clamp-2">{p.name}</div>
                   <div className="text-sm text-ink-3 flex flex-wrap gap-x-2">{rupees(p.price)}{p.mrp > p.price && <s className="text-ink-3/70">{rupees(p.mrp)}</s>}<span>·</span><span className={p.stock <= 0 ? 'text-bad font-medium' : ''}>{p.stock <= 0 ? 'Out of stock' : `${p.stock} in stock`}</span></div>
                 </div>
                 <Badge tone={p.status === 'ACTIVE' ? 'ok' : p.status === 'DRAFT' ? 'note' : 'muted'}>{PRODUCT_STATUS[p.status]}</Badge>
