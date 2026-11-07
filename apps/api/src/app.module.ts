@@ -6,6 +6,7 @@ import { CustomersModule } from './crm/customers';
 import { CouponsModule } from './crm/coupons';
 import { PagesModule } from './content/pages';
 import { SettingsModule } from './settings/settings';
+import { ImportModule } from './imports/import.module';
 import { SuperadminModule } from './superadmin/superadmin.module';
 import { AuthModule } from './auth/auth.module';
 import { AppConfig } from './config/app-config';
@@ -23,5 +24,5 @@ import { UploadsModule } from './uploads/uploads.module';
 })
 class CoreModule {}
 
-@Module({ imports: [CoreModule, MailModule, TenancyModule, AuthModule, SuperadminModule, StoreModule, UploadsModule, CatalogModule, OrdersModule, CustomersModule, CouponsModule, PagesModule, SettingsModule], controllers: [HealthController] })
+@Module({ imports: [CoreModule, MailModule, TenancyModule, AuthModule, SuperadminModule, StoreModule, UploadsModule, CatalogModule, OrdersModule, CustomersModule, CouponsModule, PagesModule, SettingsModule, ImportModule], controllers: [HealthController] })
 export class AppModule {}
