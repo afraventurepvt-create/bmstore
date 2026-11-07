@@ -8,6 +8,7 @@ import { MailModule } from './mail/mail.module';
 import { PrismaService } from './prisma/prisma.service';
 import { RedisService } from './redis/redis.service';
 import { TenancyModule } from './tenancy/tenancy.module';
+import { UploadsModule } from './uploads/uploads.module';
 
 @Global()
 @Module({
@@ -16,5 +17,5 @@ import { TenancyModule } from './tenancy/tenancy.module';
 })
 class CoreModule {}
 
-@Module({ imports: [CoreModule, MailModule, TenancyModule, AuthModule, SuperadminModule, StoreModule], controllers: [HealthController] })
+@Module({ imports: [CoreModule, MailModule, TenancyModule, AuthModule, SuperadminModule, StoreModule, UploadsModule], controllers: [HealthController] })
 export class AppModule {}

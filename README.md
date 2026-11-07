@@ -4,7 +4,7 @@ One multi-tenant ecommerce platform. Each client store is a tenant; one codebase
 Node.js · NestJS 11 · Prisma 6 · PostgreSQL 16 (single DB, `tenant_id` on every tenant-scoped row, row-level security on every table) · Redis · TypeScript.
 
 ```
-apps/api      NestJS API (Phase 1: tenancy, auth, superadmin skeleton, encryption, isolation gate)
+apps/api      NestJS API (tenancy, RLS, auth + login protection + password reset, superadmin, encryption, presigned uploads, isolation gate)
 ```
 
 ## Run it on your laptop
@@ -43,6 +43,14 @@ Feature code uses `prisma.db` (tenant-scoped, fails closed). `prisma.base` is un
 | `POST /auth/refresh`, `POST /auth/logout` | rotating refresh tokens, family revocation on reuse |
 | `POST /auth/forgot-password` | always 202; existing active accounts get a mail (stub transport: `MailerService.outbox`) with a single-use link, 30 min expiry, hash-only storage; previous tokens voided |
 | `POST /auth/reset-password` | single-use (atomic), bound to the Host it was issued on, clears lockout, revokes all sessions |
+
+## Uploads
+
+Files never pass through the API. `POST /store/uploads/presign` (owner/staff) returns a short-lived presigned S3 `PUT`
+URL for a tenant-prefixed key (`tenants/<tenantId>/<kind>/…`); content type and length are part of the signature.
+Works with S3 or any S3-compatible store (`S3_ENDPOINT`, `S3_FORCE_PATH_STYLE=1`). No multipart parser, no multer:
+a test fails if one appears, and root `package.json` `overrides` pin the transitive `multer` / `deepmerge-ts` copies
+past their advisories.
 
 ## Two database roles
 

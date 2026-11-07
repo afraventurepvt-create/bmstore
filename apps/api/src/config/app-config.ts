@@ -34,6 +34,19 @@ export class AppConfig {
   /** Password reset: token lifetime and the link put in the email ({host} = request Host, {token} = raw token). */
   readonly passwordResetTtlMin = Number(process.env.PASSWORD_RESET_TTL_MINUTES ?? 30);
   readonly passwordResetUrlTemplate = process.env.PASSWORD_RESET_URL_TEMPLATE ?? 'https://{host}/reset-password?token={token}';
+  // --- Uploads: direct-to-S3 presigned PUTs (src/uploads). Unset S3_BUCKET => uploads answer 503. ---
+  readonly s3Bucket = process.env.S3_BUCKET || undefined;
+  readonly s3Region = process.env.S3_REGION ?? 'ap-south-1';
+  /** Optional, for S3-compatible stores (R2, MinIO). */
+  readonly s3Endpoint = process.env.S3_ENDPOINT || undefined;
+  readonly s3ForcePathStyle = process.env.S3_FORCE_PATH_STYLE === '1';
+  readonly s3AccessKeyId = process.env.S3_ACCESS_KEY_ID || undefined;
+  readonly s3SecretAccessKey = process.env.S3_SECRET_ACCESS_KEY || undefined;
+  /** Where uploaded objects are served from (CDN). Defaults to the bucket's own URL. */
+  readonly s3PublicBaseUrl = process.env.S3_PUBLIC_BASE_URL || undefined;
+  readonly uploadMaxBytes = Number(process.env.UPLOAD_MAX_BYTES ?? 5 * 1024 * 1024);
+  readonly uploadUrlTtlSec = Number(process.env.UPLOAD_URL_TTL_SECONDS ?? 300);
+
   /** Forgot-password requests per email per window (silently dropped above it) and per IP. */
   readonly forgotPerEmailLimit = Number(process.env.FORGOT_PER_EMAIL_LIMIT ?? 3);
   readonly forgotPerIpLimit = Number(process.env.FORGOT_PER_IP_LIMIT ?? 10);
