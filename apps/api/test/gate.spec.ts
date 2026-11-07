@@ -87,7 +87,10 @@ const META: Record<string, Meta> = {
     touch: { stock: 99 }, compound: (r) => ({ tenantId_slug: { tenantId: r.tenantId, slug: r.slug } }),
     crossRef: (db, s, o) => factories.Product(db, s, 50, { categoryId: o.Category[0].id }),
   },
-  Variant: { touch: { stock: 99 }, compound: (r) => ({ productId_optionName_optionValue: { productId: r.productId, optionName: r.optionName, optionValue: r.optionValue } }) },
+  Variant: {
+    touch: { stock: 99 }, compound: (r) => ({ tenantId_productId_optionName_optionValue: { tenantId: r.tenantId, productId: r.productId, optionName: r.optionName, optionValue: r.optionValue } }),
+    crossRef: (db, s, o) => factories.Variant(db, s, 50, { productId: o.Product[0].id }),
+  },
   Order: {
     touch: { tax: 5 }, compound: (r) => ({ tenantId_orderNo: { tenantId: r.tenantId, orderNo: r.orderNo } }),
     crossRef: (db, s, o) => factories.Order(db, s, 50, { customerId: o.Customer[0].id }),
@@ -114,7 +117,7 @@ describe('GATE: tenant isolation across every model', () => {
   const otherOf = (who: 'A' | 'B') => (who === 'A' ? 'B' : 'A') as 'A' | 'B';
   const count = (who: 'A' | 'B', m: string) => seeded[who][m].length;
   const idWhere = (m: string, r: Row) => (pkField(m) === 'tenantId' ? { tenantId: r.tenantId } : { id: r.id });
-  const baseWhere = (m: string, tid: string): any => (m === 'Tenant' ? { id: tid } : m === 'Variant' ? { product: { tenantId: tid } } : { tenantId: tid });
+  const baseWhere = (m: string, tid: string): any => (m === 'Tenant' ? { id: tid } : { tenantId: tid });
 
   async function snap(who: 'A' | 'B') {
     const out: Record<string, string> = {};
@@ -159,10 +162,9 @@ describe('GATE: tenant isolation across every model', () => {
         if (hasField(m, 'tenantId')) expect(SCOPES[m].kind).toBe('direct');
       }
       expect(Object.keys(SCOPES).sort()).toEqual([...MODELS].sort());
-      // The only models allowed to lack a tenantId column are the two special scopes.
-      expect(MODELS.filter((m) => !hasField(m, 'tenantId')).sort()).toEqual(['Tenant', 'Variant']);
+      // The only model allowed to lack a tenantId column is the tenants table itself.
+      expect(MODELS.filter((m) => !hasField(m, 'tenantId'))).toEqual(['Tenant']);
       expect(SCOPES.Tenant.kind).toBe('self');
-      expect(SCOPES.Variant.kind).toBe('viaProduct');
     });
     it('every model has a seed factory + attack metadata, and both tenants have rows in every model', () => {
       for (const m of MODELS) {
@@ -339,12 +341,13 @@ describe('GATE: tenant isolation across every model', () => {
           expectBlocked(await rejection(as(me, () => db[D].upsert({ where: idWhere(m, theirs()[0]), update: {}, create: data }))));
         }
         if (m === 'Variant') {
+          // a variant of the other tenant's product: the composite (tenant_id, product_id) FK refuses it in the database
           const data = await dataFor(m, seeded[me], 60, { productId: seeded[other].Product[0].id });
-          expectBlocked(await rejection(as(me, () => db.variant.create({ data }))));
-          expectBlocked(await rejection(as(me, () => db.variant.createMany({ data: [data] }))));
+          expectBlocked(await rejection(as(me, () => db.variant.create({ data }))), 'P2003');
+          expectBlocked(await rejection(as(me, () => db.variant.createMany({ data: [data] }))), 'P2003');
           // and cannot re-parent its own variant under the other tenant's product
-          expectBlocked(await rejection(as(me, () => db.variant.update({ where: { id: mine()[0].id }, data: { productId: seeded[other].Product[0].id } }))));
-          expectBlocked(await rejection(as(me, () => db.variant.updateMany({ data: { productId: seeded[other].Product[0].id } }))));
+          expectBlocked(await rejection(as(me, () => db.variant.update({ where: { id: mine()[0].id }, data: { productId: seeded[other].Product[0].id } }))), 'P2003');
+          expectBlocked(await rejection(as(me, () => db.variant.updateMany({ data: { productId: seeded[other].Product[0].id } }))), 'P2003');
         }
         if (hasField(m, 'tenantId') && !SINGLE_ROW.has(m)) {
           // cannot MOVE its own row to the other tenant
@@ -505,7 +508,7 @@ describe('GATE: tenant isolation across every model', () => {
       expect(n).toBe(0);
       expect(await raw.$executeRawUnsafe(`DELETE FROM "${table(m)}"`)).toBe(0);
       // inserting even a perfectly well-formed row of tenant A is refused: no pin, no rows
-      const data = m === 'Tenant' ? { name: 'x', slug: rnd(), subdomain: rnd() } : await dataFor(m, seeded.A, 90, hasField(m, 'tenantId') ? { tenantId: T.A.id } : {});
+      const data = m === 'Tenant' ? { name: 'x', slug: rnd(), subdomain: rnd() } : await dataFor(m, seeded.A, 90, { tenantId: T.A.id });
       expectRls(await rejection(raw[D].create({ data })));
     });
 
@@ -540,12 +543,11 @@ describe('GATE: tenant isolation across every model', () => {
         if (m === 'Tenant') {
           expectRls(await rejection(pinned(T[me].id, false, (tx) => tx.tenant.create({ data: { name: 'x', slug: rnd(), subdomain: rnd() } }))));
         } else {
-          const foreign = await dataFor(m, seeded[me], 91, hasField(m, 'tenantId') ? { tenantId: T[other].id } : { productId: seeded[other].Product[0].id });
+          const foreign = await dataFor(m, seeded[me], 91, { tenantId: T[other].id });
           expectRls(await rejection(pinned(T[me].id, false, (tx) => tx[D].create({ data: foreign }))));
           // ...and so is raw SQL (audit_logs is append-only, so its raw attack is an INSERT rather than a move)
           const rawWrite: [string, ...string[]] =
-            m === 'Variant' ? [`INSERT INTO "variants" (id, product_id, option_name, option_value) VALUES (gen_random_uuid(), $1::uuid, 'Size', 'XL')`, seeded[other].Product[0].id]
-            : m === 'AuditLog' ? [`INSERT INTO "audit_logs" (id, action, tenant_id) VALUES (gen_random_uuid(), 'gate.rls', $1::uuid)`, T[other].id]
+            m === 'AuditLog' ? [`INSERT INTO "audit_logs" (id, action, tenant_id) VALUES (gen_random_uuid(), 'gate.rls', $1::uuid)`, T[other].id]
             : [`UPDATE "${table(m)}" SET tenant_id = $1::uuid WHERE tenant_id = $2::uuid`, T[other].id, T[me].id];
           expectRls(await rejection(pinned(T[me].id, false, (tx) => tx.$executeRawUnsafe(...rawWrite))));
         }

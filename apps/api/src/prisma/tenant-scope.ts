@@ -30,15 +30,14 @@ export class TenantIsolationError extends Error {
 
 export type Scope =
   | { kind: 'direct'; nullable?: boolean } // has a tenant_id column
-  | { kind: 'self' } // the tenants table: row id == tenant id
-  | { kind: 'viaProduct' }; // variants: scoped through product.tenant_id
+  | { kind: 'self' }; // the tenants table: row id == tenant id
 
 export const SCOPES: Record<string, Scope> = {
   Tenant: { kind: 'self' },
   ThemeConfig: { kind: 'direct' },
   Category: { kind: 'direct' },
   Product: { kind: 'direct' },
-  Variant: { kind: 'viaProduct' },
+  Variant: { kind: 'direct' },
   Customer: { kind: 'direct' },
   Order: { kind: 'direct' },
   Coupon: { kind: 'direct' },
@@ -253,11 +252,9 @@ export function createScopedClient(app: PrismaClient, admin: PrismaClient) {
       if (operation === 'create') out.data = await guardCreate(model, scope, args.data, val);
       else out.data = await Promise.all(arr(args.data).map((d: any) => guardCreate(model, scope, d, val)));
       if (operation === 'createMany' && !Array.isArray(args.data)) out.data = out.data[0];
-      if (scope.kind === 'viaProduct') await assertProductsOwned(arr(out.data).map((d: any) => d.productId));
     } else if (operation === 'upsert') {
       out.create = await guardCreate(model, scope, args.create, val);
       out.update = await guardUpdate(model, scope, args.update, val);
-      if (scope.kind === 'viaProduct') await assertProductsOwned([out.create.productId]);
     } else if (operation.startsWith('update')) {
       out.data = await guardUpdate(model, scope, args.data, val);
     }
@@ -268,7 +265,6 @@ export function createScopedClient(app: PrismaClient, admin: PrismaClient) {
     switch (scope.kind) {
       case 'direct': return { tenantId: val };
       case 'self': return { id: val };
-      case 'viaProduct': return { product: { tenantId: val } };
     }
   }
 
@@ -279,10 +275,6 @@ export function createScopedClient(app: PrismaClient, admin: PrismaClient) {
       if ('tenant' in data) throw new TenantIsolationError(`${model}: pass scalars, not the tenant relation`);
       if (data.tenantId !== undefined && data.tenantId !== val) throw new TenantIsolationError(`${model}: tenantId does not match the active tenant`);
       return { ...data, tenantId: val };
-    }
-    if (scope.kind === 'viaProduct') {
-      if ('product' in data) throw new TenantIsolationError('Variant: pass productId, not the product relation');
-      if (typeof data.productId !== 'string') throw new TenantIsolationError('Variant: productId is required');
     }
     return data;
   }
@@ -295,19 +287,7 @@ export function createScopedClient(app: PrismaClient, admin: PrismaClient) {
       if (data.tenantId !== undefined && data.tenantId !== val) throw new TenantIsolationError(`${model}: cannot move rows between tenants`);
     }
     if (scope.kind === 'self' && 'id' in data) throw new TenantIsolationError('Cannot change tenant id');
-    if (scope.kind === 'viaProduct') {
-      if ('product' in data) throw new TenantIsolationError('Variant: pass productId, not the product relation');
-      if (typeof data.productId === 'string') await assertProductsOwned([data.productId]);
-      else if (data.productId !== undefined) throw new TenantIsolationError('Variant: invalid productId');
-    }
     return data;
-  }
-
-  /** Variants carry no tenant_id: make sure every referenced product belongs to the active tenant. */
-  async function assertProductsOwned(ids: string[]) {
-    const unique = [...new Set(ids)];
-    const found = await ext.product.findMany({ where: { id: { in: unique } }, select: { id: true } });
-    if (found.length !== unique.length) throw new TenantIsolationError('Variant: product does not belong to the active tenant');
   }
 
   /**

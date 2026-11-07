@@ -92,17 +92,20 @@ describe('Prisma tenant-scope extension', () => {
     expect(c.tenantId).toBe(A.id);
   });
 
-  it('variants are scoped through product', async () => {
+  it('variants carry tenant_id; the composite FK refuses a variant of another tenant\'s product', async () => {
     const pa = await asA(() => db.product.create({ data: prod() }));
     const pb = await asB(() => db.product.create({ data: prod() }));
-    await expect(asA(() => db.variant.create({ data: { productId: pb.id, optionName: 'Size', optionValue: 'M' } }))).rejects.toThrow(/does not belong/);
+    await expect(asA(() => db.variant.create({ data: { productId: pb.id, optionName: 'Size', optionValue: 'M' } }))).rejects.toThrow(/Foreign key/i);
     const va = await asA(() => db.variant.create({ data: { productId: pa.id, optionName: 'Size', optionValue: 'M' } }));
+    expect(va.tenantId).toBe(A.id);
     expect(await asB(() => db.variant.findUnique({ where: { id: va.id } }))).toBeNull();
     await expect(asB(() => db.variant.update({ where: { id: va.id }, data: { stock: 99 } }))).rejects.toThrow();
-    await expect(asA(() => db.variant.update({ where: { id: va.id }, data: { productId: pb.id } }))).rejects.toThrow(/does not belong/);
-    // nested create under an owned product is fine
+    await expect(asA(() => db.variant.update({ where: { id: va.id }, data: { productId: pb.id } }))).rejects.toThrow(/Foreign key/i);
+    await expect(asA(() => db.variant.create({ data: { productId: pa.id, optionName: 'Size', optionValue: 'L', tenantId: B.id } }))).rejects.toThrow(/does not match/);
+    // nested create under an owned product is fine (tenant_id is injected on the nested row too)
     const withV = await asA(() => db.product.create({ data: { ...prod(), variants: { create: [{ optionName: 'Color', optionValue: 'Red' }] } }, include: { variants: true } }));
     expect(withV.variants).toHaveLength(1);
+    expect(withV.variants[0].tenantId).toBe(A.id);
   });
 
   it('tenant code cannot create/delete tenants or change plan/status/expiry; sees only itself', async () => {
