@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import type { TenantPlan, TenantStatus } from '@prisma/client';
 
 export type Role = 'superadmin' | 'store_owner' | 'staff';
 
@@ -9,8 +10,8 @@ export interface TenantInfo {
   slug: string;
   subdomain: string;
   customDomain: string | null;
-  plan: string;
-  status: 'active' | 'suspended';
+  plan: TenantPlan;
+  status: TenantStatus;
   gstNumber: string | null;
   address: string | null;
   supportPhone: string | null;

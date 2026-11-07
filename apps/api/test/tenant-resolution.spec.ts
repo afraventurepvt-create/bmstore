@@ -67,7 +67,7 @@ describe('tenant resolution middleware', () => {
   });
 
   it('blocks suspended and expired stores with 403', async () => {
-    const s = await makeTenant(db, { status: 'suspended' });
+    const s = await makeTenant(db, { status: 'SUSPENDED' });
     const e = await makeTenant(db, { expiresAt: new Date(Date.now() - 1000) });
     created.push(s.id, e.id);
     await get(`${s.subdomain}.localhost`).expect(403);
@@ -85,7 +85,7 @@ describe('tenant resolution middleware', () => {
     expect(ttl).toBeLessThanOrEqual(300);
 
     // Mutate DB behind the cache's back: cached value wins until invalidated.
-    await db.tenant.update({ where: { id: t.id }, data: { status: 'suspended' } });
+    await db.tenant.update({ where: { id: t.id }, data: { status: 'SUSPENDED' } });
     await get(host).expect(200);
     await resolver.invalidate({ subdomain: t.subdomain });
     await get(host).expect(403);

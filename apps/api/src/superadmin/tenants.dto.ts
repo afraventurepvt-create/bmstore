@@ -1,6 +1,7 @@
+import { TenantPlan, TenantStatus } from '@prisma/client';
 import { Transform, Type } from 'class-transformer';
 import {
-  IsBoolean, IsDateString, IsEmail, IsIn, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested,
+  IsBoolean, IsDateString, IsEmail, IsEnum, IsInt, IsOptional, IsString, Matches, Max, MaxLength, Min, MinLength, ValidateIf, ValidateNested,
 } from 'class-validator';
 
 export const LABEL_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -17,7 +18,7 @@ export class CreateTenantDto {
   @Matches(LABEL_RE, { message: 'slug must be lowercase letters, digits and hyphens' }) slug!: string;
   @Matches(LABEL_RE, { message: 'subdomain must be lowercase letters, digits and hyphens' }) subdomain!: string;
   @IsOptional() @Matches(DOMAIN_RE, { message: 'customDomain must be a lowercase hostname' }) customDomain?: string;
-  @IsOptional() @IsString() @MaxLength(40) plan?: string;
+  @IsOptional() @IsEnum(TenantPlan) plan?: TenantPlan;
   @IsOptional() @IsString() @MaxLength(20) gstNumber?: string;
   @IsOptional() @IsString() @MaxLength(500) address?: string;
   @IsOptional() @IsString() @MaxLength(20) supportPhone?: string;
@@ -27,7 +28,7 @@ export class CreateTenantDto {
 }
 
 export class ListTenantsQuery {
-  @IsOptional() @IsIn(['active', 'suspended']) status?: 'active' | 'suspended';
+  @IsOptional() @IsEnum(TenantStatus) status?: TenantStatus;
   @IsOptional() @IsString() @MaxLength(100) q?: string;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) page?: number = 1;
   @IsOptional() @Type(() => Number) @IsInt() @Min(1) @Max(100) pageSize?: number = 20;
@@ -36,6 +37,14 @@ export class ListTenantsQuery {
 
 export class ReasonDto {
   @IsOptional() @IsString() @MaxLength(500) reason?: string;
+}
+
+export class SetStatusDto extends ReasonDto {
+  @IsEnum(TenantStatus) status!: TenantStatus;
+}
+
+export class SetPlanDto extends ReasonDto {
+  @IsEnum(TenantPlan) plan!: TenantPlan;
 }
 
 export class SetExpiryDto {

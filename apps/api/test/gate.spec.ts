@@ -54,8 +54,8 @@ const factories: Record<string, (db: any, s: Seed, i: number, over?: Row) => Pro
   Customer: (db, _s, i, o) => db.customer.create({ data: { name: `cust${i}`, phone: `9${rnd()}${i}`, email: `c${i}-${rnd()}@x.test`, addresses: [{ line1: 'x' }], ...o } }),
   Product: (db, s, i, o) => db.product.create({ data: { name: `prod${i}`, slug: `prod-${i}-${rnd()}`, price: 10, mrp: 12, sku: `sku-${rnd()}`, stock: 3, categoryId: s.Category[0].id, images: ['i.png'], hsnCode: '6109', ...o } }),
   Variant: (db, s, i, o) => db.variant.create({ data: { productId: s.Product[i % s.Product.length].id, optionName: 'Size', optionValue: `v${i}-${rnd()}`, priceDelta: 1, stock: 2, sku: `vs-${rnd()}`, ...o } }),
-  Order: (db, s, i, o) => db.order.create({ data: { orderNo: `ORD-${i}-${rnd()}`, customerId: s.Customer[i % s.Customer.length].id, items: [{ sku: 'x', qty: 1 }], subtotal: 10, shipping: 1, tax: 1, total: 12, paymentMode: 'cod', address: { city: 'Pune' }, ...o } }),
-  Coupon: (db, _s, i, o) => db.coupon.create({ data: { code: `C${i}${rnd()}`, type: 'percent', value: 10, minOrder: 100, usageLimit: 5, ...o } }),
+  Order: (db, s, i, o) => db.order.create({ data: { orderNo: `ORD-${i}-${rnd()}`, customerId: s.Customer[i % s.Customer.length].id, items: [{ sku: 'x', qty: 1 }], subtotal: 10, shipping: 1, tax: 1, total: 12, paymentMode: 'COD', address: { city: 'Pune' }, ...o } }),
+  Coupon: (db, _s, i, o) => db.coupon.create({ data: { code: `C${i}${rnd()}`, type: 'PERCENT', value: 10, minOrder: 100, usageLimit: 5, ...o } }),
   Page: (db, _s, i, o) => db.page.create({ data: { slug: `pg-${i}-${rnd()}`, title: `Page ${i}`, content: 'hello', isPolicy: i === 0, ...o } }),
   User: (db, _s, i, o) => db.user.create({ data: { email: `u${i}-${rnd()}@gate.test`, passwordHash: 'not-a-real-hash', role: 'staff', ...o } }),
   RefreshToken: (db, s, i, o) => db.refreshToken.create({ data: { userId: s.User[0].id, familyId: randomUUID(), tokenHash: `h-${rnd()}-${i}`, expiresAt: new Date(Date.now() + 86_400_000), ...o } }),
@@ -174,6 +174,9 @@ describe('GATE: tenant isolation across every model', () => {
       }
       expect(MODELS).toHaveLength(13);
     });
+    it('money is integer paise everywhere: no Float/Decimal field in any model', () => {
+      for (const m of DMMF_MODELS) for (const f of m.fields) expect(`${m.name}.${f.name}:${f.type}`).not.toMatch(/:(Float|Decimal)$/);
+    });
     it('static check: only allowlisted files may touch the UNSCOPED client (prisma.base)', () => {
       // `base` is the escape hatch used by tenant resolution (pre-context), the audit writer and the extension.
       // Feature code must use `prisma.db`. Adding a file here requires a deliberate edit + review.
@@ -249,7 +252,7 @@ describe('GATE: tenant isolation across every model', () => {
         const myProducts = new Set(seeded[me].Product.map((p) => p.id));
         const check = (v: any) => {
           if (Array.isArray(v)) return v.forEach(check);
-          if (!v || typeof v !== 'object' || v instanceof Date || v instanceof Prisma.Decimal) return;
+          if (!v || typeof v !== 'object' || v instanceof Date) return;
           if ('tenantId' in v && v.tenantId !== null) expect(v.tenantId).toBe(T[me].id);
           if ('subdomain' in v && 'slug' in v) expect(v.id).toBe(T[me].id); // a tenants row can only be my own
           if ('productId' in v && 'optionName' in v) expect(myProducts.has(v.productId)).toBe(true);
@@ -383,7 +386,7 @@ describe('GATE: tenant isolation across every model', () => {
   // ------------------------------------------------------------------------------------------------
   describe.each(['A', 'B'] as const)('tenant %s cannot escalate its own tenants row', (me) => {
     it.each([
-      ['plan', { plan: 'enterprise' }], ['status', { status: 'active' }], ['expiresAt', { expiresAt: null }],
+      ['plan', { plan: 'STANDARD' }], ['status', { status: 'LIVE' }], ['expiresAt', { expiresAt: null }],
       ['expiresAt (future)', { expiresAt: new Date('2099-01-01') }], ['slug', { slug: 'taken-over' }], ['subdomain', { subdomain: 'taken-over' }],
       ['customDomain', { customDomain: 'evil.example.com' }], ['id', { id: randomUUID() }],
     ])('update of %s is refused (single, upsert-free, bulk)', async (_n, data) => {

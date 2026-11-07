@@ -20,49 +20,60 @@ enum UserRole {
   staff
 }
 
+// Vocabulary is fixed (do not add synonyms): see PREWORK_REPORT.md.
+enum TenantPlan {
+  STARTER // at most 10 products (enforced by a DB trigger, migration 0006)
+  STANDARD // unlimited within fair use
+}
+
 enum TenantStatus {
-  active
-  suspended
+  BUILDING // being set up: store admins can log in and work, storefront not yet public
+  LIVE
+  SUSPENDED // blocked (e.g. non-payment): every request on the store host is refused
+  PARKED // dormant: every request on the store host is refused
 }
 
 enum ProductStatus {
-  draft
-  active
-  archived
+  DRAFT
+  ACTIVE
+  ARCHIVED
 }
 
 enum PaymentMode {
-  cod
-  online
+  COD
+  ONLINE
 }
 
 enum PaymentStatus {
-  pending
-  paid
-  failed
-  refunded
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+  PARTIALLY_REFUNDED
 }
 
 enum OrderStatus {
-  placed
-  confirmed
-  packed
-  shipped
-  delivered
-  cancelled
-  returned
+  PENDING
+  CONFIRMED
+  PACKED
+  SHIPPED
+  DELIVERED
+  CANCELLED
+  RETURNED
 }
 
 enum CouponType {
-  percent
-  flat
+  PERCENT
+  FLAT
 }
 
 enum ShippingMode {
-  flat
-  free
-  free_above
+  FLAT
+  FREE
+  FREE_ABOVE
 }
+
+// MONEY: every amount is an integer number of paise (Int). No Float/Decimal columns anywhere; the gate test enforces it.
 
 model Tenant {
   id                String       @id @default(uuid()) @db.Uuid
@@ -70,8 +81,8 @@ model Tenant {
   slug              String       @unique
   subdomain         String       @unique
   customDomain      String?      @unique @map("custom_domain")
-  plan              String       @default("starter")
-  status            TenantStatus @default(active)
+  plan              TenantPlan   @default(STARTER)
+  status            TenantStatus @default(BUILDING)
   gstNumber         String?      @map("gst_number")
   address           String?
   supportPhone      String?      @map("support_phone")
@@ -140,11 +151,11 @@ model Product {
   name        String
   slug        String
   description String?
-  price       Decimal       @db.Decimal(12, 2)
-  mrp         Decimal       @db.Decimal(12, 2)
+  price       Int // paise
+  mrp         Int // paise
   sku         String?
   stock       Int           @default(0)
-  status      ProductStatus @default(draft)
+  status      ProductStatus @default(DRAFT)
   categoryId  String?       @map("category_id") @db.Uuid
   images      String[]
   hsnCode     String?       @map("hsn_code")
@@ -171,7 +182,7 @@ model Variant {
   productId   String  @map("product_id") @db.Uuid
   optionName  String  @map("option_name")
   optionValue String  @map("option_value")
-  priceDelta  Decimal @default(0) @map("price_delta") @db.Decimal(12, 2)
+  priceDelta  Int     @default(0) @map("price_delta") // paise, may be negative
   stock       Int     @default(0)
   sku         String?
 
@@ -208,13 +219,13 @@ model Order {
   orderNo       String        @map("order_no")
   customerId    String        @map("customer_id") @db.Uuid
   items         Json
-  subtotal      Decimal       @db.Decimal(12, 2)
-  shipping      Decimal       @default(0) @db.Decimal(12, 2)
-  tax           Decimal       @default(0) @db.Decimal(12, 2)
-  total         Decimal       @db.Decimal(12, 2)
+  subtotal      Int // paise
+  shipping      Int           @default(0) // paise
+  tax           Int           @default(0) // paise
+  total         Int // paise
   paymentMode   PaymentMode   @map("payment_mode")
-  paymentStatus PaymentStatus @default(pending) @map("payment_status")
-  orderStatus   OrderStatus   @default(placed) @map("order_status")
+  paymentStatus PaymentStatus @default(PENDING) @map("payment_status")
+  orderStatus   OrderStatus   @default(PENDING) @map("order_status")
   address       Json
   createdAt     DateTime      @default(now()) @map("created_at")
 
@@ -233,8 +244,8 @@ model Coupon {
   tenantId   String     @map("tenant_id") @db.Uuid
   code       String
   type       CouponType
-  value      Decimal    @db.Decimal(12, 2)
-  minOrder   Decimal    @default(0) @map("min_order") @db.Decimal(12, 2)
+  value      Int // FLAT: paise off; PERCENT: whole percent (0-100)
+  minOrder   Int        @default(0) @map("min_order") // paise
   usageLimit Int?       @map("usage_limit")
   expiresAt  DateTime?  @map("expires_at")
 
@@ -261,11 +272,11 @@ model Page {
 
 model Settings {
   tenantId     String       @id @map("tenant_id") @db.Uuid
-  shippingMode ShippingMode @default(flat) @map("shipping_mode")
-  flatRate     Decimal      @default(0) @map("flat_rate") @db.Decimal(12, 2)
-  freeAbove    Decimal?     @map("free_above") @db.Decimal(12, 2)
+  shippingMode ShippingMode @default(FLAT) @map("shipping_mode")
+  flatRate     Int          @default(0) @map("flat_rate") // paise
+  freeAbove    Int?         @map("free_above") // paise
   codEnabled   Boolean      @default(true) @map("cod_enabled")
-  codCharge    Decimal      @default(0) @map("cod_charge") @db.Decimal(12, 2)
+  codCharge    Int          @default(0) @map("cod_charge") // paise
   orderPrefix  String       @default("ORD") @map("order_prefix")
 
   tenant Tenant @relation(fields: [tenantId], references: [id], onDelete: Cascade)

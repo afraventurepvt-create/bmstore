@@ -2,8 +2,8 @@ import { TenantResolver } from '../src/tenancy/tenant-resolver.service';
 
 describe('TenantResolver with ROOT_DOMAIN=bmstore.in (production host shape)', () => {
   const rows: Record<string, any> = {
-    acme: { id: 't1', subdomain: 'acme', customDomain: null, status: 'active', expiresAt: null, slug: 'acme' },
-    shop: { id: 't2', subdomain: 'shop', customDomain: 'www.shop-example.com', status: 'active', expiresAt: null, slug: 'shop' },
+    acme: { id: 't1', subdomain: 'acme', customDomain: null, status: 'LIVE', expiresAt: null, slug: 'acme' },
+    shop: { id: 't2', subdomain: 'shop', customDomain: 'www.shop-example.com', status: 'LIVE', expiresAt: null, slug: 'shop' },
   };
   const cfg: any = { rootDomain: 'bmstore.in', reservedSubdomains: new Set(['www', 'admin', 'api']), tenantCacheTtl: 300, tenantNegativeCacheTtl: 60 };
   const prisma: any = {

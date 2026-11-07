@@ -1,5 +1,5 @@
 import { ConflictException, Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
-import { Prisma } from '@prisma/client';
+import { Prisma, TenantPlan, TenantStatus } from '@prisma/client';
 import { AppConfig } from '../config/app-config';
 import { AuthService } from '../auth/auth.service';
 import { AuthActor } from '../common/request-context';
@@ -42,7 +42,7 @@ export class SuperadminTenantsService {
               slug: dto.slug,
               subdomain: dto.subdomain,
               customDomain: dto.customDomain ?? null,
-              plan: dto.plan ?? 'starter',
+              plan: dto.plan ?? 'STARTER',
               gstNumber: dto.gstNumber,
               address: dto.address,
               supportPhone: dto.supportPhone,
@@ -92,8 +92,14 @@ export class SuperadminTenantsService {
     return presentTenant(t);
   }
 
-  setStatus(actor: AuthActor, id: string, status: 'active' | 'suspended', reason?: string) {
-    return this.mutate(actor, id, { status }, status === 'suspended' ? 'tenant.suspended' : 'tenant.unsuspended', reason);
+  setStatus(actor: AuthActor, id: string, status: TenantStatus, reason?: string) {
+    const action = status === 'SUSPENDED' ? 'tenant.suspended' : status === 'LIVE' ? 'tenant.unsuspended' : 'tenant.status_set';
+    return this.mutate(actor, id, { status }, action, reason, { status });
+  }
+
+  /** Plan changes never delete data: a STANDARD -> STARTER downgrade keeps existing products but blocks new ones past the cap. */
+  setPlan(actor: AuthActor, id: string, plan: TenantPlan, reason?: string) {
+    return this.mutate(actor, id, { plan }, 'tenant.plan_set', reason, { plan });
   }
 
   setExpiry(actor: AuthActor, id: string, expiresAt: string | null, reason?: string) {

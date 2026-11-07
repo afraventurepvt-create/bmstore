@@ -53,10 +53,10 @@ describe('superadmin API', () => {
 
   describe('create', () => {
     it('creates tenant + settings + theme + owner; owner can log in right away; no razorpay fields leak', async () => {
-      const t = newTenant({ gstNumber: '29ABCDE1234F1Z5', plan: 'pro' });
+      const t = newTenant({ gstNumber: '29ABCDE1234F1Z5', plan: 'STANDARD' });
       const res = await admin('post', '/superadmin/tenants').send(t).expect(201);
       created.push(res.body.id);
-      expect(res.body).toMatchObject({ slug: t.slug, plan: 'pro', status: 'active', razorpayConfigured: false });
+      expect(res.body).toMatchObject({ slug: t.slug, plan: 'STANDARD', status: 'BUILDING', razorpayConfigured: false });
       expect(JSON.stringify(res.body)).not.toMatch(/razorpayKeyEnc|razorpaySecretEnc|passwordHash/);
       expect(await base.settings.count({ where: { tenantId: res.body.id } })).toBe(1);
       expect(await base.themeConfig.count({ where: { tenantId: res.body.id } })).toBe(1);
@@ -83,7 +83,8 @@ describe('superadmin API', () => {
       await admin('post', '/superadmin/tenants').send(newTenant({ subdomain: 'admin' })).expect(400);
       await admin('post', '/superadmin/tenants').send(newTenant({ customDomain: 'shop.localhost' })).expect(400);
       await admin('post', '/superadmin/tenants').send(newTenant({ owner: { email: 'a@b.co', password: 'short' } })).expect(400);
-      await admin('post', '/superadmin/tenants').send(newTenant({ status: 'active' })).expect(400); // not whitelisted
+      await admin('post', '/superadmin/tenants').send(newTenant({ status: 'LIVE' })).expect(400); // not whitelisted
+      await admin('post', '/superadmin/tenants').send(newTenant({ plan: 'pro' })).expect(400); // not in the enum
       await admin('post', '/superadmin/tenants').send({ name: 'x' }).expect(400);
     });
   });
@@ -117,13 +118,28 @@ describe('superadmin API', () => {
     it('suspend blocks the storefront and the store API at once; unsuspend restores', async () => {
       await api().get('/health').set('Host', host).expect(200);
       const s = await admin('post', `/superadmin/tenants/${id}/suspend`).send({ reason: 'non-payment' }).expect(200);
-      expect(s.body.status).toBe('suspended');
+      expect(s.body.status).toBe('SUSPENDED');
       await api().get('/health').set('Host', host).expect(403);
       await api().get('/auth/me').set('Host', host).set('Authorization', `Bearer ${ownerTok}`).expect(403);
       await api().post('/auth/login').set('Host', host).send(t.owner).expect(403);
       const u = await admin('post', `/superadmin/tenants/${id}/unsuspend`).send({}).expect(200);
-      expect(u.body.status).toBe('active');
+      expect(u.body.status).toBe('LIVE');
       await api().get('/health').set('Host', host).expect(200);
+    });
+
+    it('generic status endpoint: PARKED blocks, BUILDING serves (admins can work), bogus values rejected', async () => {
+      const p = await admin('post', `/superadmin/tenants/${id}/status`).send({ status: 'PARKED', reason: 'churned' }).expect(200);
+      expect(p.body.status).toBe('PARKED');
+      expect((await api().get('/health').set('Host', host).expect(403)).body.message).toBe('Store parked');
+      const b = await admin('post', `/superadmin/tenants/${id}/status`).send({ status: 'BUILDING' }).expect(200);
+      expect(b.body.status).toBe('BUILDING');
+      await api().get('/health').set('Host', host).expect(200);
+      await api().get('/auth/me').set('Host', host).set('Authorization', `Bearer ${ownerTok}`).expect(200);
+      await admin('post', `/superadmin/tenants/${id}/status`).send({ status: 'active' }).expect(400);
+      await admin('post', `/superadmin/tenants/${id}/status`).send({}).expect(400);
+      await admin('post', `/superadmin/tenants/${id}/status`).send({ status: 'LIVE' }).expect(200);
+      const logs = await base.auditLog.findMany({ where: { actorId: adminId, tenantId: id, action: 'tenant.status_set' } });
+      expect(logs.map((l) => (l.meta as any).status).sort()).toEqual(['BUILDING', 'PARKED']);
     });
 
     it('set expiry: past blocks, null clears, garbage rejected', async () => {
@@ -147,7 +163,7 @@ describe('superadmin API', () => {
     it('writes semantic AND per-query audit rows attributed to the superadmin', async () => {
       const logs = await base.auditLog.findMany({ where: { actorId: adminId, tenantId: id }, orderBy: { createdAt: 'asc' } });
       const actions = logs.map((l) => l.action);
-      expect(actions).toEqual(expect.arrayContaining(['tenant.suspended', 'tenant.unsuspended', 'tenant.expiry_set', 'db.Tenant.update']));
+      expect(actions).toEqual(expect.arrayContaining(['tenant.suspended', 'tenant.unsuspended', 'tenant.status_set', 'tenant.expiry_set', 'db.Tenant.update']));
       const sus = logs.find((l) => l.action === 'tenant.suspended')!;
       expect((sus.meta as any).reason).toBe('non-payment');
       // per-query rows exist for the creation transaction too

@@ -69,8 +69,8 @@ describe('Prisma tenant-scope extension', () => {
   });
 
   it('deleteMany/updateMany with empty filter only touches the active tenant', async () => {
-    await asA(() => db.coupon.create({ data: { code: uniq('c'), type: 'flat', value: 5 } }));
-    await asB(() => db.coupon.create({ data: { code: uniq('c'), type: 'flat', value: 5 } }));
+    await asA(() => db.coupon.create({ data: { code: uniq('c'), type: 'FLAT', value: 5 } }));
+    await asB(() => db.coupon.create({ data: { code: uniq('c'), type: 'FLAT', value: 5 } }));
     await asA(() => db.coupon.deleteMany({}));
     expect(await base.coupon.count({ where: { tenantId: A.id } })).toBe(0);
     expect(await base.coupon.count({ where: { tenantId: B.id } })).toBe(1);
@@ -79,11 +79,11 @@ describe('Prisma tenant-scope extension', () => {
   it('rejects nested connect to a foreign row (and the DB composite FK backs it up)', async () => {
     const cb = await asB(() => db.customer.create({ data: { name: 'b', phone: uniq('9') } }));
     await expect(
-      asA(() => db.order.create({ data: { orderNo: uniq('o'), customer: { connect: { id: cb.id } }, items: [], subtotal: 1, total: 1, paymentMode: 'cod', address: {} } })),
+      asA(() => db.order.create({ data: { orderNo: uniq('o'), customer: { connect: { id: cb.id } }, items: [], subtotal: 1, total: 1, paymentMode: 'COD', address: {} } })),
     ).rejects.toThrow(TenantIsolationError);
     // Scalar-id path: the DB's (tenant_id, customer_id) FK refuses it.
     await expect(
-      asA(() => db.order.create({ data: { orderNo: uniq('o'), customerId: cb.id, items: [], subtotal: 1, total: 1, paymentMode: 'cod', address: {} } })),
+      asA(() => db.order.create({ data: { orderNo: uniq('o'), customerId: cb.id, items: [], subtotal: 1, total: 1, paymentMode: 'COD', address: {} } })),
     ).rejects.toThrow(/Foreign key/i);
   });
 
@@ -112,7 +112,7 @@ describe('Prisma tenant-scope extension', () => {
     const seen = await asA(() => db.tenant.findMany());
     expect(seen.map((t: any) => t.id)).toEqual([A.id]);
     expect(await asA(() => db.tenant.findUnique({ where: { id: B.id } }))).toBeNull();
-    await expect(asA(() => db.tenant.update({ where: { id: A.id }, data: { status: 'active', plan: 'enterprise' } }))).rejects.toThrow(/cannot modify/);
+    await expect(asA(() => db.tenant.update({ where: { id: A.id }, data: { status: 'LIVE', plan: 'STANDARD' } }))).rejects.toThrow(/cannot modify/);
     await expect(asA(() => db.tenant.update({ where: { id: A.id }, data: { expiresAt: null } }))).rejects.toThrow(/cannot modify/);
     await expect(asA(() => db.tenant.delete({ where: { id: A.id } }))).rejects.toThrow(TenantIsolationError);
     await expect(asA(() => db.tenant.create({ data: { name: 'x', slug: uniq(), subdomain: uniq() } }))).rejects.toThrow(TenantIsolationError);
